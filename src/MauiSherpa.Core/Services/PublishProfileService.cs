@@ -15,6 +15,7 @@ public class PublishProfileService : IPublishProfileService
     readonly IManagedSecretsService _managedSecrets;
     readonly IAppleConnectService _appleConnect;
     readonly IAppleIdentityService _appleIdentity;
+    readonly IAppleIdentityStateService _identityState;
     readonly ILoggingService _logger;
 
     static readonly JsonSerializerOptions JsonOptions = new()
@@ -35,6 +36,7 @@ public class PublishProfileService : IPublishProfileService
         IManagedSecretsService managedSecrets,
         IAppleConnectService appleConnect,
         IAppleIdentityService appleIdentity,
+        IAppleIdentityStateService identityState,
         ILoggingService logger)
     {
         _cloudService = cloudService;
@@ -44,6 +46,7 @@ public class PublishProfileService : IPublishProfileService
         _managedSecrets = managedSecrets;
         _appleConnect = appleConnect;
         _appleIdentity = appleIdentity;
+        _identityState = identityState;
         _logger = logger;
     }
 
@@ -135,6 +138,14 @@ public class PublishProfileService : IPublishProfileService
         foreach (var apple in profile.AppleConfigs)
         {
             ct.ThrowIfCancellationRequested();
+
+            // Ensure the correct Apple identity is selected for API calls
+            if (!string.IsNullOrEmpty(apple.IdentityId))
+            {
+                var identity = await _appleIdentity.GetIdentityAsync(apple.IdentityId);
+                if (identity is not null)
+                    _identityState.SetSelectedIdentity(identity);
+            }
 
             // Certificate P12
             if (!string.IsNullOrEmpty(apple.CertificateSerialNumber))

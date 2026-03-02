@@ -12,6 +12,7 @@
 @inject ISecretsPublisherService PublisherService
 @inject IPublishProfileService ProfileService
 @inject ILocalCertificateService LocalCertService
+@inject ICertificateSyncService CertSyncService
 @inject IMediator Mediator
 @implements IDisposable
 
@@ -546,7 +547,7 @@
                                                 <span>Key ID: @identity.KeyId</span>
                                             </div>
                                         </div>
-                                        <span class="key-status has-key"><i class="fa-brands fa-apple"></i></span>
+                                        <span style="font-size: 14px; color: var(--text-muted);"><i class="fa-brands fa-apple"></i></span>
                                     </label>
                                 }
                             </div>
@@ -626,9 +627,12 @@
                             <div class="cert-list">
                                 @foreach (var cert in FilteredSigningCerts)
                                 {
-                                    var hasKey = HasPrivateKey(cert);
-                                    <label class="cert-item @(appleWizardActive.CertificateSerialNumber == cert.SerialNumber ? "selected" : "") @(!hasKey ? "no-key" : "")">
+                                    var syncLoc = GetCertSyncLocation(cert);
+                                    var hasLocal = syncLoc == SecretLocation.LocalOnly || syncLoc == SecretLocation.Both;
+                                    <label class="cert-item @(appleWizardActive.CertificateSerialNumber == cert.SerialNumber ? "selected" : "") @(!hasLocal ? "no-key" : "")"
+                                           title="@(!hasLocal ? "Private key not available locally" : "")">
                                         <input type="radio" name="wizardSigningCert"
+                                               disabled="@(!hasLocal)"
                                                checked="@(appleWizardActive.CertificateSerialNumber == cert.SerialNumber)"
                                                @onchange="@(() => appleWizardActive.CertificateSerialNumber = cert.SerialNumber)" />
                                         <div class="cert-info">
@@ -638,13 +642,20 @@
                                                 <span>Expires: @cert.ExpirationDate.ToString("MMM dd, yyyy")</span>
                                             </div>
                                         </div>
-                                        @if (hasKey)
+                                        @switch (syncLoc)
                                         {
-                                            <span class="key-status has-key" title="Private key available"><i class="fa-solid fa-key"></i></span>
-                                        }
-                                        else
-                                        {
-                                            <span class="key-status no-key" title="No private key locally"><i class="fa-solid fa-key"></i></span>
+                                            case SecretLocation.Both:
+                                                <span class="sync-badge synced" title="Synced — private key in keychain and cloud"><i class="fa-solid fa-cloud-arrow-up"></i> Synced</span>
+                                                break;
+                                            case SecretLocation.LocalOnly:
+                                                <span class="sync-badge local-only" title="Local only — private key in keychain"><i class="fa-solid fa-key"></i> Local</span>
+                                                break;
+                                            case SecretLocation.CloudOnly:
+                                                <span class="sync-badge cloud-only" title="Cloud only — not installed locally"><i class="fa-solid fa-cloud"></i> Cloud</span>
+                                                break;
+                                            default:
+                                                <span class="sync-badge no-key" title="No private key available"><i class="fa-solid fa-key"></i> No Key</span>
+                                                break;
                                         }
                                     </label>
                                 }
@@ -676,9 +687,12 @@
                             <div class="cert-list">
                                 @foreach (var cert in FilteredInstallerCerts)
                                 {
-                                    var hasKey = HasPrivateKey(cert);
-                                    <label class="cert-item @(appleWizardActive.InstallerCertSerialNumber == cert.SerialNumber ? "selected" : "") @(!hasKey ? "no-key" : "")">
+                                    var syncLoc = GetCertSyncLocation(cert);
+                                    var hasLocal = syncLoc == SecretLocation.LocalOnly || syncLoc == SecretLocation.Both;
+                                    <label class="cert-item @(appleWizardActive.InstallerCertSerialNumber == cert.SerialNumber ? "selected" : "") @(!hasLocal ? "no-key" : "")"
+                                           title="@(!hasLocal ? "Private key not available locally" : "")">
                                         <input type="radio" name="wizardInstallerCert"
+                                               disabled="@(!hasLocal)"
                                                checked="@(appleWizardActive.InstallerCertSerialNumber == cert.SerialNumber)"
                                                @onchange="@(() => appleWizardActive.InstallerCertSerialNumber = cert.SerialNumber)" />
                                         <div class="cert-info">
@@ -688,13 +702,20 @@
                                                 <span>Expires: @cert.ExpirationDate.ToString("MMM dd, yyyy")</span>
                                             </div>
                                         </div>
-                                        @if (hasKey)
+                                        @switch (syncLoc)
                                         {
-                                            <span class="key-status has-key" title="Private key available"><i class="fa-solid fa-key"></i></span>
-                                        }
-                                        else
-                                        {
-                                            <span class="key-status no-key" title="No private key locally"><i class="fa-solid fa-key"></i></span>
+                                            case SecretLocation.Both:
+                                                <span class="sync-badge synced" title="Synced — private key in keychain and cloud"><i class="fa-solid fa-cloud-arrow-up"></i> Synced</span>
+                                                break;
+                                            case SecretLocation.LocalOnly:
+                                                <span class="sync-badge local-only" title="Local only — private key in keychain"><i class="fa-solid fa-key"></i> Local</span>
+                                                break;
+                                            case SecretLocation.CloudOnly:
+                                                <span class="sync-badge cloud-only" title="Cloud only — not installed locally"><i class="fa-solid fa-cloud"></i> Cloud</span>
+                                                break;
+                                            default:
+                                                <span class="sync-badge no-key" title="No private key available"><i class="fa-solid fa-key"></i> No Key</span>
+                                                break;
                                         }
                                     </label>
                                 }
@@ -1742,17 +1763,41 @@
         color: var(--text-muted);
     }
 
-    .key-status {
-        font-size: 14px;
+    .sync-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: 10px;
+        white-space: nowrap;
+        flex-shrink: 0;
     }
 
-    .key-status.has-key {
+    .sync-badge.synced {
         color: var(--success-color, #22c55e);
+        background: rgba(34, 197, 94, 0.1);
     }
 
-    .key-status.no-key {
+    .sync-badge.local-only {
+        color: var(--accent-color, #3b82f6);
+        background: rgba(59, 130, 246, 0.1);
+    }
+
+    .sync-badge.cloud-only {
+        color: var(--warning-color, #f59e0b);
+        background: rgba(245, 158, 11, 0.1);
+    }
+
+    .sync-badge.no-key {
         color: var(--danger-color, #ef4444);
-        opacity: 0.5;
+        background: rgba(239, 68, 68, 0.08);
+        opacity: 0.7;
+    }
+
+    .sync-badge i {
+        font-size: 10px;
     }
 
     .empty-list {
@@ -1906,6 +1951,7 @@
     private List<AppleCertificate> certificates = new();
     private List<AppleProfile> profiles = new();
     private List<LocalSigningIdentity> localIdentities = new();
+    private Dictionary<string, CertificateSecretInfo> certStatuses = new();
     private AppleConfigVM? appleWizardActive;
     private bool loadingAppleData;
 
@@ -2202,6 +2248,21 @@
             certificates = certResult.Result?.ToList() ?? new();
             var profileResult = await Mediator.Request(new GetProfilesRequest(identityId));
             profiles = profileResult.Result?.ToList() ?? new();
+
+            // Load sync statuses for certificates
+            if (certificates.Any())
+            {
+                try
+                {
+                    var statuses = await CertSyncService.GetCertificateStatusesAsync(certificates);
+                    certStatuses = statuses.ToDictionary(s => s.SerialNumber, StringComparer.OrdinalIgnoreCase);
+                }
+                catch { certStatuses = new(); }
+            }
+            else
+            {
+                certStatuses = new();
+            }
         }
         catch { certificates = new(); profiles = new(); }
         finally { loadingAppleData = false; StateHasChanged(); }
@@ -2314,13 +2375,27 @@
             li.CommonName.Contains(cert.Name, StringComparison.OrdinalIgnoreCase) ||
             cert.Name.Contains(li.CommonName, StringComparison.OrdinalIgnoreCase));
 
+    private SecretLocation GetCertSyncLocation(AppleCertificate cert)
+    {
+        if (certStatuses.TryGetValue(cert.SerialNumber, out var info))
+            return info.Location;
+        // Fall back to local key check
+        return HasPrivateKey(cert) ? SecretLocation.LocalOnly : SecretLocation.None;
+    }
+
+    private bool CertHasLocalKey(AppleCertificate cert)
+    {
+        var loc = GetCertSyncLocation(cert);
+        return loc == SecretLocation.LocalOnly || loc == SecretLocation.Both;
+    }
+
     private IEnumerable<AppleCertificate> FilteredSigningCerts =>
         certificates.Where(c => IsSigningCertCompatible(c.CertificateType) && c.ExpirationDate > DateTime.UtcNow)
-                    .OrderByDescending(c => HasPrivateKey(c));
+                    .OrderByDescending(c => CertHasLocalKey(c));
 
     private IEnumerable<AppleCertificate> FilteredInstallerCerts =>
         certificates.Where(c => c.CertificateType.Contains("INSTALLER", StringComparison.OrdinalIgnoreCase) && c.ExpirationDate > DateTime.UtcNow)
-                    .OrderByDescending(c => HasPrivateKey(c));
+                    .OrderByDescending(c => CertHasLocalKey(c));
 
     private IEnumerable<AppleProfile> FilteredProfiles =>
         profiles.Where(p => p.State == "ACTIVE" && IsProfileCompatible(p.ProfileType));

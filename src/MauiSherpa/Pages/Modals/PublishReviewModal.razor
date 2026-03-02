@@ -1,0 +1,917 @@
+@page "/modal/publish-review"
+@using MauiSherpa.Core.Interfaces
+@using MauiSherpa.Core.Requests.Publisher
+@using MauiSherpa.Pages.Forms
+@using Shiny.Mediator
+@inject HybridFormBridgeHolder BridgeHolder
+@inject ISecretsPublisherService PublisherService
+@inject ISecretsPublisherFactory PublisherFactory
+@inject IPublishProfileService ProfileService
+@inject ILoggingService Logger
+@inject IMediator Mediator
+@implements IDisposable
+
+<div class="publish-review">
+    @if (isResolving)
+    {
+        <div class="resolving-state">
+            <i class="fa-solid fa-spinner fa-spin" style="font-size: 24px; color: var(--accent-color, #3b82f6);"></i>
+            <h3>Resolving Secrets</h3>
+            <p class="step-description">@resolvingStatus</p>
+        </div>
+    }
+    else if (resolveError is not null)
+    {
+        <div class="resolving-state">
+            <i class="fa-solid fa-circle-xmark" style="font-size: 24px; color: #ef4444;"></i>
+            <h3>Failed to Resolve</h3>
+            <p class="step-description">@resolveError</p>
+        </div>
+    }
+    else if (step == 1)
+    {
+        <h3>Review Secrets</h3>
+        <p class="step-description">Select which secrets to publish. Uncheck any you want to exclude.</p>
+
+        @if (resolveWarnings.Count > 0)
+        {
+            <div class="resolve-warnings">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                <div>
+                    <strong>Some items could not be resolved:</strong>
+                    <ul>
+                        @foreach (var w in resolveWarnings)
+                        {
+                            <li>@w</li>
+                        }
+                    </ul>
+                </div>
+            </div>
+        }
+
+        <div class="select-controls">
+            <span class="select-count">@checkedSecrets.Count(kv => kv.Value) of @checkedSecrets.Count selected</span>
+            <button class="btn-text-action" @onclick="ToggleAllSecrets">
+                @(checkedSecrets.All(kv => kv.Value) ? "Uncheck All" : "Check All")
+            </button>
+        </div>
+
+        <div class="secrets-checklist">
+            @foreach (var key in secretKeys)
+            {
+                <label class="check-item">
+                    <input type="checkbox" checked="@checkedSecrets[key]"
+                           @onchange="@(e => { checkedSecrets[key] = (bool)(e.Value ?? false); UpdateWizardState(); })" />
+                    <span class="check-label mono">@key</span>
+                </label>
+            }
+        </div>
+    }
+    else if (step == 2)
+    {
+        <h3>Review Destinations</h3>
+        <p class="step-description">Select which repositories to publish to.</p>
+
+        @if (destinations.Any())
+        {
+            <div class="destinations-checklist">
+                @foreach (var dest in destinations)
+                {
+                    <label class="check-item destination-item">
+                        <input type="checkbox" checked="@dest.Checked"
+                               @onchange="@(e => { dest.Checked = (bool)(e.Value ?? false); UpdateWizardState(); })" />
+                        <div class="dest-info">
+                            <i class="@GetProviderIcon(dest.ProviderId)"></i>
+                            <div class="dest-details">
+                                <span class="dest-repo">@dest.RepositoryFullName</span>
+                                <span class="dest-provider">@dest.PublisherName</span>
+                            </div>
+                        </div>
+                    </label>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="empty-hint">No destinations configured in this profile.</div>
+        }
+
+        @if (!showAddDestination)
+        {
+            <button class="btn-text-action" style="margin-top: 8px;" @onclick="@(() => showAddDestination = true)">
+                <i class="fa-solid fa-plus"></i> Add Destination
+            </button>
+        }
+        else
+        {
+            <div class="add-dest-section">
+                @if (addDestStep == 0)
+                {
+                    <div class="add-dest-header">
+                        <span class="add-dest-title">Choose Provider</span>
+                        <button class="btn-icon-action" @onclick="@(() => showAddDestination = false)">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                    <div class="selection-list compact">
+                        @foreach (var pub in allPublishers)
+                        {
+                            <label class="selection-item" @onclick="@(() => SelectAddPublisher(pub))">
+                                <div class="item-content">
+                                    <div class="item-name"><i class="@GetProviderIcon(pub.ProviderId)" style="margin-right: 6px;"></i>@pub.Name</div>
+                                    <div class="item-detail">@pub.ProviderId</div>
+                                </div>
+                                <i class="fa-solid fa-chevron-right" style="color: var(--text-muted); font-size: 11px;"></i>
+                            </label>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="add-dest-header">
+                        <button class="btn-text-action" @onclick="@(() => { addDestStep = 0; addDestPublisher = null; })">
+                            <i class="fa-solid fa-arrow-left"></i> Back
+                        </button>
+                        <button class="btn-icon-action" @onclick="@(() => { showAddDestination = false; addDestStep = 0; addDestPublisher = null; })">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                    <div class="search-box">
+                        <i class="fas fa-search"></i>
+                        <input type="text" @bind="addDestRepoSearch" @bind:event="oninput"
+                               placeholder="Search repositories..." />
+                        @if (!string.IsNullOrEmpty(addDestRepoSearch))
+                        {
+                            <button class="clear-search" @onclick="@(() => addDestRepoSearch = "")">×</button>
+                        }
+                    </div>
+                    @if (addDestLoadingRepos)
+                    {
+                        <div class="loading-hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading repositories...</div>
+                    }
+                    else if (addDestFilteredRepos.Any())
+                    {
+                        <div class="selection-list compact">
+                            @foreach (var repo in addDestFilteredRepos.Take(20))
+                            {
+                                <label class="selection-item" @onclick="@(() => AddNewDestination(repo))">
+                                    <div class="item-content">
+                                        <div class="item-name">@repo.FullName</div>
+                                        <div class="item-detail">@(string.IsNullOrEmpty(repo.Description) ? "\u00A0" : repo.Description)</div>
+                                    </div>
+                                </label>
+                            }
+                        </div>
+                    }
+                    else if (!addDestLoadingRepos)
+                    {
+                        <div class="empty-hint">No repositories found</div>
+                    }
+                }
+            </div>
+        }
+    }
+    else if (step == 3)
+    {
+        <h3>Publishing</h3>
+        <p class="step-description">
+            @if (publishComplete)
+            {
+                @:All operations complete.
+            }
+            else
+            {
+                @:Publishing secrets to selected destinations...
+            }
+        </p>
+
+        <div class="publish-status-list">
+            @foreach (var dest in destinations.Where(d => d.Checked))
+            {
+                <div class="publish-status-row">
+                    <div class="status-icon">
+                        @if (dest.Status == PublishStatus.InProgress)
+                        {
+                            <i class="fa-solid fa-spinner fa-spin" style="color: var(--accent-color, #3b82f6);"></i>
+                        }
+                        else if (dest.Status == PublishStatus.Success)
+                        {
+                            <i class="fa-solid fa-circle-check" style="color: #22c55e;"></i>
+                        }
+                        else if (dest.Status == PublishStatus.Error)
+                        {
+                            <i class="fa-solid fa-circle-xmark" style="color: #ef4444;"></i>
+                        }
+                        else
+                        {
+                            <i class="fa-solid fa-circle" style="color: var(--text-muted); font-size: 10px;"></i>
+                        }
+                    </div>
+                    <div class="status-info">
+                        <div class="status-dest">
+                            <i class="@GetProviderIcon(dest.ProviderId)" style="margin-right: 4px;"></i>
+                            @dest.RepositoryFullName
+                        </div>
+                        <div class="status-message">@dest.StatusMessage</div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @if (publishComplete)
+        {
+            var successCount = destinations.Count(d => d.Checked && d.Status == PublishStatus.Success);
+            var errorCount = destinations.Count(d => d.Checked && d.Status == PublishStatus.Error);
+            <div class="publish-summary-bar">
+                @if (errorCount == 0)
+                {
+                    <i class="fa-solid fa-circle-check" style="color: #22c55e;"></i>
+                    <span>Published @selectedSecretCount secret(s) to @successCount destination(s)</span>
+                }
+                else
+                {
+                    <i class="fa-solid fa-triangle-exclamation" style="color: #f59e0b;"></i>
+                    <span>@successCount succeeded, @errorCount failed</span>
+                }
+            </div>
+        }
+    }
+</div>
+
+<style>
+    .publish-review {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        padding: 0 16px;
+    }
+
+    .publish-review h3 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 0 0 2px 0;
+        color: var(--text-primary);
+    }
+
+    .resolving-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 40px 20px;
+        text-align: center;
+    }
+
+    .step-description {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin: 0 0 12px 0;
+    }
+
+    .resolve-warnings {
+        display: flex;
+        gap: 8px;
+        padding: 8px 12px;
+        margin-bottom: 10px;
+        background: rgba(234, 179, 8, 0.1);
+        border: 1px solid rgba(234, 179, 8, 0.3);
+        border-radius: 6px;
+        font-size: 11px;
+        color: var(--text-secondary);
+    }
+
+    .resolve-warnings i {
+        color: #eab308;
+        margin-top: 2px;
+        flex-shrink: 0;
+    }
+
+    .resolve-warnings ul {
+        margin: 2px 0 0 0;
+        padding-left: 16px;
+    }
+
+    .resolve-warnings li {
+        margin: 1px 0;
+    }
+
+    .select-controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .select-count {
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+
+    .secrets-checklist, .destinations-checklist {
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        max-height: 360px;
+    }
+
+    .check-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--border-color, #e2e8f0);
+        cursor: pointer;
+    }
+
+    .check-item:last-child {
+        border-bottom: none;
+    }
+
+    .check-item:hover {
+        background: var(--bg-hover, #f3f4f6);
+        border-radius: 0.25rem;
+    }
+
+    .check-item input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+        accent-color: var(--accent-color, #3b82f6);
+    }
+
+    .check-label {
+        font-size: 13px;
+        color: var(--text-primary);
+    }
+
+    .mono {
+        font-family: monospace;
+    }
+
+    .destination-item {
+        padding: 8px;
+    }
+
+    .dest-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+    }
+
+    .dest-info > i {
+        font-size: 16px;
+        color: var(--text-muted);
+        width: 20px;
+        text-align: center;
+    }
+
+    .dest-details {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .dest-repo {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+
+    .dest-provider {
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+
+    .btn-text-action {
+        background: none;
+        border: none;
+        color: var(--accent-color, #3b82f6);
+        font-size: 13px;
+        cursor: pointer;
+        padding: 4px 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .btn-text-action:hover {
+        text-decoration: underline;
+    }
+
+    .btn-icon-action {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 4px;
+        font-size: 14px;
+    }
+
+    .add-dest-section {
+        margin-top: 8px;
+        border: 1px solid var(--border-color, #e2e8f0);
+        border-radius: 0.5rem;
+        padding: 10px;
+        background: var(--card-bg, #fff);
+    }
+
+    .add-dest-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .add-dest-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+
+    .search-box {
+        position: relative;
+        display: flex;
+        align-items: center;
+        border: 1px solid var(--border-color, #d1d5db);
+        border-radius: 0.375rem;
+        background: var(--input-bg, #fff);
+        padding: 0;
+        gap: 0;
+        margin-bottom: 8px;
+    }
+
+    .search-box:focus-within {
+        border-color: var(--accent-color, #3b82f6);
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+    }
+
+    .search-box i {
+        position: absolute;
+        left: 8px;
+        color: var(--text-muted);
+        font-size: 12px;
+        pointer-events: none;
+    }
+
+    .search-box input {
+        flex: 1;
+        border: none;
+        background: transparent;
+        padding: 4px 26px;
+        font-size: 13px;
+        color: var(--text-primary);
+        outline: none;
+    }
+
+    .clear-search {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 0 8px;
+        font-size: 16px;
+    }
+
+    .selection-list {
+        display: flex;
+        flex-direction: column;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .selection-list.compact .selection-item {
+        padding: 6px 8px;
+    }
+
+    .selection-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        cursor: pointer;
+        border-bottom: 1px solid var(--border-color, #e2e8f0);
+    }
+
+    .selection-item:last-child {
+        border-bottom: none;
+    }
+
+    .selection-item:hover {
+        background: var(--bg-hover, #f3f4f6);
+        border-radius: 0.25rem;
+    }
+
+    .item-content {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .item-name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+
+    .item-detail {
+        font-size: 12px;
+        color: var(--text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .loading-hint, .empty-hint {
+        padding: 16px;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+
+    /* Publish status */
+    .publish-status-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .publish-status-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 10px 8px;
+        border-bottom: 1px solid var(--border-color, #e2e8f0);
+    }
+
+    .publish-status-row:last-child {
+        border-bottom: none;
+    }
+
+    .status-icon {
+        width: 20px;
+        text-align: center;
+        padding-top: 2px;
+    }
+
+    .status-info {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .status-dest {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+        display: flex;
+        align-items: center;
+    }
+
+    .status-message {
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+
+    .publish-summary-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px;
+        margin-top: 12px;
+        background: var(--bg-tertiary, #f1f5f9);
+        border-radius: 0.5rem;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+</style>
+
+@code {
+    private int step = 1;
+    private Dictionary<string, string> secretsDict = new();
+    private List<string> secretKeys = new();
+    private Dictionary<string, bool> checkedSecrets = new();
+    private PublishProfile? profile;
+
+    // Resolving state
+    private bool isResolving = true;
+    private string resolvingStatus = "Preparing...";
+    private string? resolveError;
+    private List<string> resolveWarnings = new();
+
+    private List<DestinationVM> destinations = new();
+    private List<SecretsPublisherConfig> allPublishers = new();
+
+    // Add destination inline picker
+    private bool showAddDestination;
+    private int addDestStep; // 0 = pick provider, 1 = pick repo
+    private SecretsPublisherConfig? addDestPublisher;
+    private string addDestRepoSearch = "";
+    private bool addDestLoadingRepos;
+    private List<PublisherRepository> addDestRepos = new();
+
+    // Publish state
+    private bool isPublishing;
+    private bool publishComplete;
+
+    private int selectedSecretCount => checkedSecrets.Count(kv => kv.Value);
+
+    private IEnumerable<PublisherRepository> addDestFilteredRepos =>
+        string.IsNullOrWhiteSpace(addDestRepoSearch)
+            ? addDestRepos
+            : addDestRepos.Where(r =>
+                r.FullName.Contains(addDestRepoSearch, StringComparison.OrdinalIgnoreCase)
+                || (r.Description?.Contains(addDestRepoSearch, StringComparison.OrdinalIgnoreCase) ?? false));
+
+    protected override async Task OnInitializedAsync()
+    {
+        var bridge = BridgeHolder.Current;
+        if (bridge is null) return;
+
+        if (bridge.Parameters.TryGetValue("Profile", out var profileObj) && profileObj is PublishProfile p)
+            profile = p;
+
+        bridge.SubmitRequested += OnSubmitRequested;
+        bridge.BackRequested += OnBackRequested;
+        bridge.NextRequested += OnNextRequested;
+
+        // Resolve secrets inside the dialog
+        isResolving = true;
+        resolvingStatus = "Resolving secrets from profile...";
+        bridge.SetWizardState(showBack: false, showNext: false, showSubmit: false, canProceed: false, submitText: "Publish");
+        StateHasChanged();
+
+        try
+        {
+            var progress = new Progress<string>(msg =>
+            {
+                resolvingStatus = msg;
+                InvokeAsync(StateHasChanged);
+            });
+
+            secretsDict = await ProfileService.ResolveSecretsAsync(profile!, progress);
+
+            // Check for partial failures — items that were configured but didn't resolve
+            foreach (var apple in profile!.AppleConfigs)
+            {
+                var label = apple.Label.ToUpperInvariant().Replace(' ', '_').Replace('-', '_');
+                if (!string.IsNullOrEmpty(apple.CertificateSerialNumber)
+                    && !secretsDict.Keys.Any(k => k.Contains(label) && k.Contains("CERTIFICATE")))
+                    resolveWarnings.Add($"Certificate for \"{apple.Label}\" could not be fetched");
+                if (!string.IsNullOrEmpty(apple.ProfileId)
+                    && !secretsDict.Keys.Any(k => k.Contains(label) && k.Contains("PROVISIONING")))
+                    resolveWarnings.Add($"Provisioning profile for \"{apple.Label}\" could not be fetched");
+            }
+
+            if (secretsDict.Count == 0)
+            {
+                resolveError = "No secrets could be resolved from this profile. Check that your certificates, keystores, and secrets are available.";
+                isResolving = false;
+                StateHasChanged();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            resolveError = $"Failed to resolve secrets: {ex.Message}";
+            Logger.LogError($"Failed to resolve secrets: {ex}");
+            isResolving = false;
+            StateHasChanged();
+            return;
+        }
+
+        secretKeys = secretsDict.Keys.OrderBy(k => k).ToList();
+        checkedSecrets = secretKeys.ToDictionary(k => k, _ => true);
+
+        // Load profile publishers as destinations
+        if (profile?.Publishers?.Any() == true)
+        {
+            destinations = profile.Publishers.Select(pub => new DestinationVM
+            {
+                PublisherId = pub.PublisherId,
+                PublisherName = pub.PublisherName,
+                ProviderId = pub.ProviderId,
+                RepositoryId = pub.RepositoryId,
+                RepositoryFullName = pub.RepositoryFullName,
+                Checked = true
+            }).ToList();
+        }
+        // Legacy single publisher fallback
+        else if (!string.IsNullOrEmpty(profile?.PublisherId) && !string.IsNullOrEmpty(profile?.RepositoryId))
+        {
+            try
+            {
+                var pubConfig = await PublisherService.GetPublisherAsync(profile.PublisherId);
+                if (pubConfig is not null)
+                {
+                    destinations.Add(new DestinationVM
+                    {
+                        PublisherId = pubConfig.Id,
+                        PublisherName = pubConfig.Name,
+                        ProviderId = pubConfig.ProviderId,
+                        RepositoryId = profile.RepositoryId,
+                        RepositoryFullName = profile.RepositoryFullName ?? profile.RepositoryId,
+                        Checked = true
+                    });
+                }
+            }
+            catch { }
+        }
+
+        allPublishers = (await PublisherService.GetPublishersAsync()).ToList();
+
+        isResolving = false;
+
+        UpdateWizardState();
+    }
+
+    private void UpdateWizardState()
+    {
+        var bridge = BridgeHolder.Current;
+        if (bridge is null) return;
+
+        bool canProceed = step switch
+        {
+            1 => checkedSecrets.Any(kv => kv.Value),
+            2 => destinations.Any(d => d.Checked),
+            3 => publishComplete,
+            _ => false
+        };
+
+        bridge.SetWizardState(
+            showBack: step > 1 && !isPublishing && !publishComplete,
+            showNext: step < 3 && !isPublishing,
+            showSubmit: (step == 2 && !isPublishing) || publishComplete,
+            canProceed: canProceed,
+            submitText: publishComplete ? "Done" : "Publish"
+        );
+    }
+
+    private Task OnNextRequested()
+    {
+        if (step == 1 && checkedSecrets.Any(kv => kv.Value))
+        {
+            step = 2;
+            showAddDestination = false;
+        }
+        UpdateWizardState();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private Task OnBackRequested()
+    {
+        if (step > 1 && !isPublishing)
+        {
+            step--;
+            UpdateWizardState();
+            StateHasChanged();
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task OnSubmitRequested()
+    {
+        if (publishComplete)
+        {
+            var bridge = BridgeHolder.Current;
+            if (bridge is not null)
+                bridge.Result = true;
+            return;
+        }
+
+        if (step != 2) return;
+
+        var checkedDests = destinations.Where(d => d.Checked).ToList();
+        if (!checkedDests.Any()) return;
+
+        step = 3;
+        isPublishing = true;
+        UpdateWizardState();
+        await InvokeAsync(StateHasChanged);
+
+        var selectedSecrets = secretsDict
+            .Where(kv => checkedSecrets.GetValueOrDefault(kv.Key, false))
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        foreach (var dest in checkedDests)
+        {
+            dest.Status = PublishStatus.InProgress;
+            dest.StatusMessage = $"Publishing {selectedSecrets.Count} secret(s)...";
+            await InvokeAsync(StateHasChanged);
+
+            try
+            {
+                var progress = new Progress<string>(msg =>
+                {
+                    dest.StatusMessage = msg;
+                    InvokeAsync(StateHasChanged);
+                });
+
+                await PublisherService.PublishSecretsAsync(
+                    dest.PublisherId, dest.RepositoryId, selectedSecrets, progress);
+
+                dest.Status = PublishStatus.Success;
+                dest.StatusMessage = $"{selectedSecrets.Count} secret(s) published successfully";
+            }
+            catch (Exception ex)
+            {
+                dest.Status = PublishStatus.Error;
+                dest.StatusMessage = $"Error: {ex.Message}";
+                Logger.LogError($"Failed to publish to {dest.RepositoryFullName}: {ex}");
+            }
+
+            await InvokeAsync(StateHasChanged);
+        }
+
+        isPublishing = false;
+        publishComplete = true;
+        UpdateWizardState();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ToggleAllSecrets()
+    {
+        var allChecked = checkedSecrets.All(kv => kv.Value);
+        foreach (var key in secretKeys)
+            checkedSecrets[key] = !allChecked;
+        UpdateWizardState();
+    }
+
+    private async Task SelectAddPublisher(SecretsPublisherConfig pub)
+    {
+        addDestPublisher = pub;
+        addDestStep = 1;
+        addDestRepoSearch = "";
+        addDestRepos = new();
+        addDestLoadingRepos = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await Mediator.Request(new ListPublisherRepositoriesRequest(pub.Id));
+            addDestRepos = result.Result?.ToList() ?? new();
+        }
+        catch { addDestRepos = new(); }
+
+        addDestLoadingRepos = false;
+        StateHasChanged();
+    }
+
+    private void AddNewDestination(PublisherRepository repo)
+    {
+        if (addDestPublisher is null) return;
+        if (destinations.Any(d => d.PublisherId == addDestPublisher.Id && d.RepositoryId == repo.Id))
+            return;
+
+        destinations.Add(new DestinationVM
+        {
+            PublisherId = addDestPublisher.Id,
+            PublisherName = addDestPublisher.Name,
+            ProviderId = addDestPublisher.ProviderId,
+            RepositoryId = repo.Id,
+            RepositoryFullName = repo.FullName,
+            Checked = true
+        });
+
+        showAddDestination = false;
+        addDestStep = 0;
+        addDestPublisher = null;
+        UpdateWizardState();
+    }
+
+    private string GetProviderIcon(string providerId) => providerId switch
+    {
+        "github" => "fa-brands fa-github",
+        "gitlab" => "fa-brands fa-gitlab",
+        "gitea" => "fa-solid fa-mug-hot",
+        "azuredevops" or "azure-devops" => "fa-brands fa-microsoft",
+        _ => "fa-solid fa-cloud"
+    };
+
+    public void Dispose()
+    {
+        var bridge = BridgeHolder.Current;
+        if (bridge is not null)
+        {
+            bridge.SubmitRequested -= OnSubmitRequested;
+            bridge.BackRequested -= OnBackRequested;
+            bridge.NextRequested -= OnNextRequested;
+        }
+    }
+
+    private class DestinationVM
+    {
+        public string PublisherId { get; set; } = "";
+        public string PublisherName { get; set; } = "";
+        public string ProviderId { get; set; } = "";
+        public string RepositoryId { get; set; } = "";
+        public string RepositoryFullName { get; set; } = "";
+        public bool Checked { get; set; } = true;
+        public PublishStatus Status { get; set; } = PublishStatus.Pending;
+        public string StatusMessage { get; set; } = "";
+    }
+
+    private enum PublishStatus { Pending, InProgress, Success, Error }
+}
