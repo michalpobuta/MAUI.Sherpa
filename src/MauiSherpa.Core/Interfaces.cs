@@ -2582,11 +2582,16 @@ public record PublishProfile(
 /// </summary>
 public record PublishProfileAppleConfig(
     string Label,
+    ApplePlatformType? Platform,
+    AppleDistributionType? DistributionType,
     string? CertificateSerialNumber,
     string? InstallerCertSerialNumber,
     string? ProfileId,
     string? ProfileUuid,
     bool IncludeNotarization,
+    string? NotarizationAppleIdSecretKey,
+    string? NotarizationPasswordSecretKey,
+    string? NotarizationTeamIdSecretKey,
     Dictionary<string, List<string>> KeyMappings
 );
 
