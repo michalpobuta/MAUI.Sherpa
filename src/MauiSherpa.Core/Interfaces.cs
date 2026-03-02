@@ -6,6 +6,7 @@ public interface IAlertService
 {
     Task ShowAlertAsync(string title, string message, string? cancel = null);
     Task<bool> ShowConfirmAsync(string title, string message, string? confirm = null, string? cancel = null);
+    Task<string?> ShowActionSheetAsync(string title, string? cancel, string? destruction, params string[] buttons);
     Task ShowToastAsync(string message);
 }
 
@@ -827,14 +828,40 @@ public record PhysicalDevice(
 );
 
 /// <summary>
-/// Service for managing physical iOS devices via xcrun devicectl
+/// Represents an installed app on a physical iOS device (from devicectl)
+/// </summary>
+public record PhysicalDeviceApp(
+    string BundleId,
+    string? Name,
+    string? Version,
+    string AppType,       // "User" or "System"
+    bool IsRemovable
+);
+
+/// <summary>
+/// Service for managing physical iOS devices via xcrun devicectl and libimobiledevice tools
 /// </summary>
 public interface IPhysicalDeviceService
 {
     bool IsSupported { get; }
     Task<IReadOnlyList<PhysicalDevice>> GetDevicesAsync();
+    Task<IReadOnlyList<PhysicalDeviceApp>> GetInstalledAppsAsync(string identifier);
     Task<bool> InstallAppAsync(string identifier, string appPath, IProgress<string>? progress = null);
     Task<bool> LaunchAppAsync(string identifier, string bundleId, IProgress<string>? progress = null);
+    Task<bool> UninstallAppAsync(string identifier, string bundleId, IProgress<string>? progress = null);
+    Task<bool> TerminateAppAsync(string identifier, string bundleId);
+    Task<string?> DownloadAppContainerAsync(string identifier, string bundleId, string outputDir, IProgress<string>? progress = null);
+    Task<string?> TakeScreenshotAsync(string udid, string outputPath);
+    Task<bool> SetLocationAsync(string udid, double latitude, double longitude);
+    Task<bool> ResetLocationAsync(string udid);
+}
+
+/// <summary>
+/// Service for streaming syslog from a physical iOS device via idevicesyslog.
+/// Extends ISimulatorLogService since the contract is identical.
+/// </summary>
+public interface IPhysicalDeviceLogService : ISimulatorLogService
+{
 }
 
 /// <summary>
@@ -2985,4 +3012,34 @@ public interface IDebugFlagService
     /// (e.g. "build-tools" instead of "build-tools;36.1.0"), causing the install to fail.
     /// </summary>
     bool FailBuildToolsInstall { get; set; }
+}
+
+/// <summary>
+/// Service for presenting native MAUI form modal pages.
+/// </summary>
+public interface IFormModalService
+{
+    /// <summary>
+    /// Shows a form page modally and waits for the result.
+    /// Returns the result value, or default if cancelled.
+    /// </summary>
+    Task<TResult?> ShowAsync<TResult>(IFormPage<TResult> page);
+
+    /// <summary>
+    /// Shows a view-only page modally and waits for it to close.
+    /// Used for dialogs with no result (e.g. capabilities, signatures).
+    /// The page parameter should be a ContentPage.
+    /// </summary>
+    Task ShowViewAsync(object page, Func<Task> waitForClose);
+}
+
+/// <summary>
+/// Interface for form pages that return a typed result.
+/// </summary>
+public interface IFormPage<TResult>
+{
+    /// <summary>
+    /// Awaits the form result (completes when user submits or cancels).
+    /// </summary>
+    Task<TResult?> GetResultAsync();
 }

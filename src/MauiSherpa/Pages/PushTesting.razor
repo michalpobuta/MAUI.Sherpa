@@ -20,8 +20,8 @@
     IsDirty="isDirty" />
 
 <div class="push-layout">
+    <h2 class="section-title"><i class="fas fa-key"></i> Authentication</h2>
     <div class="push-section">
-        <div class="section-header"><i class="fas fa-key"></i> Authentication</div>
         <div class="section-body">
             <div class="form-group">
                 <label>Auth Method</label>
@@ -78,8 +78,8 @@
         </div>
     </div>
 
+    <h2 class="section-title"><i class="fas fa-sliders-h"></i> Push Configuration</h2>
     <div class="push-section">
-        <div class="section-header"><i class="fas fa-sliders-h"></i> Push Configuration</div>
         <div class="section-body">
             <div class="form-row">
                 <div class="form-group flex-1">
@@ -132,8 +132,8 @@
         </div>
     </div>
 
+    <h2 class="section-title"><i class="fas fa-envelope"></i> Payload</h2>
     <div class="push-section">
-        <div class="section-header"><i class="fas fa-envelope"></i> Payload</div>
         <div class="section-body">
             <div class="form-row">
                 <div class="form-group flex-1">
@@ -161,13 +161,13 @@
 
     @if (activeProject?.History.Count > 0)
     {
+        <div class="section-title-row">
+            <h2 class="section-title"><i class="fas fa-history"></i> Send History</h2>
+            <button class="btn-clear" @onclick="ClearHistory">
+                <i class="fas fa-eraser"></i> Clear
+            </button>
+        </div>
         <div class="push-section">
-            <div class="section-header">
-                <span><i class="fas fa-history"></i> Send History</span>
-                <button class="btn-clear" @onclick="ClearHistory">
-                    <i class="fas fa-eraser"></i> Clear
-                </button>
-            </div>
             <div class="section-body history-list">
                 @foreach (var entry in activeProject.History)
                 {
@@ -214,28 +214,34 @@
         display: flex;
         flex-direction: column;
         gap: 16px;
-        max-width: 800px;
         padding-bottom: 40px;
     }
 
     .push-section {
         background: var(--card-bg);
-        border: 1px solid var(--border-color);
-        border-radius: 10px;
+        border-radius: var(--card-radius, 1rem);
         overflow: hidden;
     }
 
-    .section-header {
-        padding: 12px 20px;
+    .section-title {
         font-weight: 600;
         font-size: 14px;
         color: var(--text-primary);
-        background: var(--bg-secondary);
-        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 4px 4px;
+    }
+
+    .section-title-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
+        margin-bottom: 4px;
+    }
+
+    .section-title-row .section-title {
+        margin-bottom: 0;
     }
 
     .section-body {
@@ -316,43 +322,6 @@
         justify-content: flex-end;
     }
 
-    .btn {
-        padding: 10px 20px;
-        border: none;
-        border-radius: 6px;
-        font-size: 14px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-    }
-
-    .btn-primary {
-        background-color: var(--accent-primary);
-        color: white;
-    }
-
-    .btn-primary:hover:not(:disabled) {
-        background-color: var(--accent-primary-hover);
-    }
-
-    .btn-secondary {
-        background-color: var(--bg-hover);
-        color: var(--text-secondary);
-    }
-
-    .btn-lg {
-        padding: 12px 28px;
-        font-size: 15px;
-        font-weight: 600;
-    }
-
-    .btn:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-
     .empty-state {
         color: var(--text-tertiary);
         font-size: 13px;
@@ -381,25 +350,25 @@
     .history-list {
         display: flex;
         flex-direction: column;
-        gap: 0.5rem;
+        padding: 0;
     }
 
     .history-card {
-        background: var(--card-bg);
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
         padding: 0.75rem 1rem;
         display: flex;
         gap: 0.75rem;
         align-items: flex-start;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .history-card:last-child {
+        border-bottom: none;
     }
 
     .history-card.success {
-        border-left: 3px solid var(--success-color, #48bb78);
     }
 
     .history-card.error {
-        border-left: 3px solid var(--danger-color, #f56565);
     }
 
     .history-status {
@@ -448,7 +417,7 @@
 
     .badge {
         padding: 0.125rem 0.375rem;
-        border-radius: 4px;
+        border-radius: 0.75rem;
         font-size: 0.6875rem;
         font-weight: 600;
     }

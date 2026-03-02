@@ -1,7 +1,7 @@
 @using MauiSherpa.Core.Interfaces
 @using MauiSherpa.Core.Services
 @using MauiSherpa.Services
-@inject ISimulatorLogService LogService
+@inject ISimulatorLogService InjectedLogService
 @inject SimInspectorService PanelService
 @inject IAlertService AlertService
 @inject ILoggingService Logger
@@ -297,7 +297,7 @@
     .simlog-page .btn i { font-size: 0.6875rem; }
     .simlog-page .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.6875rem; }
     .simlog-page .btn-primary { background: var(--accent-primary); color: white; }
-    .simlog-page .btn-secondary { background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color); }
+    .simlog-page .btn-secondary { background: var(--btn-secondary-bg); color: var(--text-secondary); border: none; }
     .simlog-page .btn-success { background: #48bb78; color: white; }
     .simlog-page .btn-danger { background: #f56565; color: white; }
     .simlog-page .btn-warning { background: #ed8936; color: white; }
@@ -308,6 +308,13 @@
 
 @code {
     [Parameter] public string Udid { get; set; } = "";
+    /// <summary>
+    /// Optional override for the log service. When null, uses the injected ISimulatorLogService.
+    /// Pass IPhysicalDeviceLogService for physical device log streaming.
+    /// </summary>
+    [Parameter] public ISimulatorLogService? LogServiceOverride { get; set; }
+
+    private ISimulatorLogService LogService => LogServiceOverride ?? InjectedLogService;
 
     private ElementReference gridBody;
 

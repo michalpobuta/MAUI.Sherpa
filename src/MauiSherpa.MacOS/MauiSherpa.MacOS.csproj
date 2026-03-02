@@ -26,9 +26,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Platform.Maui.MacOS" Version="0.2.0-beta.14" />
-    <PackageReference Include="Platform.Maui.MacOS.BlazorWebView" Version="0.2.0-beta.14" />
-    <PackageReference Include="Platform.Maui.MacOS.Essentials" Version="0.2.0-beta.14" />
+    <PackageReference Include="Platform.Maui.MacOS" Version="0.2.0-beta.18" />
+    <PackageReference Include="Platform.Maui.MacOS.BlazorWebView" Version="0.2.0-beta.18" />
+    <PackageReference Include="Platform.Maui.MacOS.Essentials" Version="0.2.0-beta.18" />
     <PackageReference Include="Blazorise.Icons.FontAwesome" Version="1.7.2" />
     <PackageReference Include="Microsoft.AspNetCore.Components.QuickGrid" Version="10.0.1" />
     <PackageReference Include="Markdig" Version="0.44.0" />
@@ -38,8 +38,8 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
     <PackageReference Include="Shiny.Mediator.Caching.MicrosoftMemoryCache" Version="6.1.1" />
     <PackageReference Include="Shiny.Mediator.Maui" Version="6.1.1" />
-    <PackageReference Include="Redth.MauiDevFlow.Agent" Version="0.10.0" Condition="'$(Configuration)' == 'Debug'" />
-    <PackageReference Include="Redth.MauiDevFlow.Blazor" Version="0.10.0" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="Redth.MauiDevFlow.Agent" Version="0.12.1" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="Redth.MauiDevFlow.Blazor" Version="0.12.1" Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 
   <ItemGroup>

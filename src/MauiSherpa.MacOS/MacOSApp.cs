@@ -23,6 +23,24 @@ class MacOSApp : Application
     {
         _serviceProvider = serviceProvider;
         _preferences = serviceProvider.GetRequiredService<IPreferences>();
+        MauiSherpa.Pages.Forms.FormTheme.Register(this, serviceProvider.GetRequiredService<IThemeService>());
+
+        // Global exception handlers to log crashes
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            var logService = serviceProvider.GetService<ILoggingService>();
+            logService?.LogError($"UNHANDLED EXCEPTION: {e.ExceptionObject}");
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            var logService = serviceProvider.GetService<ILoggingService>();
+            logService?.LogError($"UNOBSERVED TASK EXCEPTION: {e.Exception}");
+        };
+        ObjCRuntime.Runtime.MarshalManagedException += (_, e) =>
+        {
+            var logService = serviceProvider.GetService<ILoggingService>();
+            logService?.LogError($"MARSHAL MANAGED EXCEPTION: {e.Exception}");
+        };
 
         var toolbarService = serviceProvider.GetRequiredService<IToolbarService>();
         toolbarService.RouteChanged += OnBlazorRouteChanged;
@@ -116,7 +134,7 @@ class MacOSApp : Application
         var sep1 = NSMenuItem.SeparatorItem;
         appMenu.InsertItem(sep1, insertIndex++);
 
-        var settingsHandler = new MenuActionHandler(() => blazorPage.NavigateToRoute("/settings"));
+        var settingsHandler = new MenuActionHandler(() => blazorPage.OpenSettingsDialog());
         _menuHandlers.Add(settingsHandler);
         var settingsItem = new NSMenuItem("Settings…", new ObjCRuntime.Selector("menuAction:"), ",");
         settingsItem.Target = settingsHandler;
@@ -147,7 +165,6 @@ class MacOSApp : Application
         {
             new() { Title = "Dashboard", SystemImage = "house.fill", Tag = "/" },
             new() { Title = "Doctor", SystemImage = "stethoscope", Tag = "/doctor" },
-            new() { Title = "Settings", SystemImage = "gear", Tag = "/settings" },
             new MacOSSidebarItem
             {
                 Title = "Android",

@@ -105,7 +105,7 @@ public class WindowsTitleBarManager
 
         _titleBar.PassthroughElements.Clear();
 
-        // When toolbar is suppressed (e.g. Copilot modal is open), show minimal titlebar
+        // When toolbar is suppressed (e.g. modal is open), show minimal titlebar
         if (_toolbarService.IsToolbarSuppressed)
         {
             var minimal = new HorizontalStackLayout
@@ -467,13 +467,21 @@ public class WindowsTitleBarManager
         var settingsItem = new MenuFlyoutItem { Text = "Settings…" };
         settingsItem.Clicked += (s, e) =>
         {
-            _ = _serviceProvider.GetRequiredService<INavigationService>().NavigateToAsync("/settings");
+            _ = OpenSettingsDialogAsync();
         };
         menuFlyout.Add(settingsItem);
 
         return CreateIdentityPickerView(
             GetEnumDescription(FontAwesomeBrandIcons.Apple), "FontAwesomeBrandIcons",
             displayName, menuFlyout);
+    }
+
+    private async Task OpenSettingsDialogAsync()
+    {
+        var bridgeHolder = _serviceProvider.GetRequiredService<MauiSherpa.Pages.Forms.HybridFormBridgeHolder>();
+        var formModalService = _serviceProvider.GetRequiredService<IFormModalService>();
+        var page = new MauiSherpa.Pages.Forms.SettingsPage(bridgeHolder);
+        await formModalService.ShowViewAsync(page, async () => await page.ShowAsync());
     }
 
     private View? CreateGoogleIdentityButton()
@@ -522,7 +530,7 @@ public class WindowsTitleBarManager
         var settingsItem = new MenuFlyoutItem { Text = "Settings…" };
         settingsItem.Clicked += (s, e) =>
         {
-            _ = _serviceProvider.GetRequiredService<INavigationService>().NavigateToAsync("/settings");
+            _ = OpenSettingsDialogAsync();
         };
         menuFlyout.Add(settingsItem);
 

@@ -4,6 +4,8 @@
 @using MauiSherpa.Core.Interfaces
 @inject SimInspectorService InspectorService
 @inject ISimulatorService SimulatorService
+@inject IDeviceMonitorService DeviceMonitor
+@inject IPhysicalDeviceLogService PhysicalLogService
 @implements IDisposable
 
 <div class="inspector-page">
@@ -17,21 +19,28 @@
                     @onclick="@(() => SetTab(SimInspectorTab.Apps))">
                 <i class="fas fa-th-large"></i> Apps
             </button>
-            <button class="inspector-tab @(ActiveTab == SimInspectorTab.Capture ? "active" : "")"
-                    @onclick="@(() => SetTab(SimInspectorTab.Capture))">
-                <i class="fas fa-camera"></i> Capture
-            </button>
-            <button class="inspector-tab @(ActiveTab == SimInspectorTab.Tools ? "active" : "")"
-                    @onclick="@(() => SetTab(SimInspectorTab.Tools))">
-                <i class="fas fa-wrench"></i> Tools
-            </button>
+            @if (!InspectorService.IsPhysicalDevice)
+            {
+                <button class="inspector-tab @(ActiveTab == SimInspectorTab.Capture ? "active" : "")"
+                        @onclick="@(() => SetTab(SimInspectorTab.Capture))">
+                    <i class="fas fa-camera"></i> Capture
+                </button>
+                <button class="inspector-tab @(ActiveTab == SimInspectorTab.Tools ? "active" : "")"
+                        @onclick="@(() => SetTab(SimInspectorTab.Tools))">
+                    <i class="fas fa-wrench"></i> Tools
+                </button>
+            }
         </div>
         <div class="inspector-device-selector">
             <i class="fab fa-apple inspector-device-icon"></i>
             <select class="inspector-device-select" value="@Udid" @onchange="OnDeviceChanged">
                 @foreach (var s in bootedSimulators)
                 {
-                    <option value="@s.Udid" selected="@(s.Udid == Udid)">@s.Name</option>
+                    <option value="@s.Udid" selected="@(s.Udid == Udid)">@s.Name (Sim)</option>
+                }
+                @foreach (var d in physicalDevices)
+                {
+                    <option value="@d.Identifier" selected="@(d.Identifier == Udid)">@d.Name</option>
                 }
             </select>
         </div>
@@ -41,16 +50,29 @@
         @switch (ActiveTab)
         {
             case SimInspectorTab.Logs:
-                <SimLogContent Udid="@Udid" />
+                @if (InspectorService.IsPhysicalDevice)
+                {
+                    <SimLogContent Udid="@Udid" LogServiceOverride="@PhysicalLogService" />
+                }
+                else
+                {
+                    <SimLogContent Udid="@Udid" />
+                }
                 break;
             case SimInspectorTab.Apps:
-                <SimAppsTab Udid="@Udid" />
+                <AppleAppsTab Identifier="@Udid" IsSimulator="@(!InspectorService.IsPhysicalDevice)" />
                 break;
             case SimInspectorTab.Capture:
-                <SimCaptureTab Udid="@Udid" />
+                @if (!InspectorService.IsPhysicalDevice)
+                {
+                    <SimCaptureTab Udid="@Udid" />
+                }
                 break;
             case SimInspectorTab.Tools:
-                <SimToolsTab Udid="@Udid" />
+                @if (!InspectorService.IsPhysicalDevice)
+                {
+                    <SimToolsTab Udid="@Udid" />
+                }
                 break;
         }
     </div>
@@ -154,6 +176,7 @@
 
     private SimInspectorTab ActiveTab = SimInspectorTab.Logs;
     private List<SimulatorDevice> bootedSimulators = new();
+    private List<AppleDeviceInfo> physicalDevices = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -162,7 +185,17 @@
         InspectorService.ActiveTab = ActiveTab;
         InspectorService.IsOpen = true;
         InspectorService.StateChanged += OnServiceStateChanged;
+
+        // Always load both so the device selector is complete
         await LoadBootedSimulatorsAsync();
+        LoadPhysicalDevices();
+
+        // If physical device landed on a sim-only tab, redirect to Apps
+        if (InspectorService.IsPhysicalDevice && (ActiveTab == SimInspectorTab.Capture || ActiveTab == SimInspectorTab.Tools))
+        {
+            ActiveTab = SimInspectorTab.Apps;
+            InspectorService.ActiveTab = ActiveTab;
+        }
     }
 
     protected override void OnParametersSet()
@@ -190,8 +223,19 @@
         var newUdid = e.Value?.ToString();
         if (string.IsNullOrEmpty(newUdid) || newUdid == Udid) return;
         Udid = newUdid;
+
+        var physical = physicalDevices.FirstOrDefault(d => d.Identifier == newUdid);
         var sim = bootedSimulators.FirstOrDefault(s => s.Udid == newUdid);
-        InspectorService.SwitchDevice(newUdid, sim?.Name);
+        InspectorService.IsPhysicalDevice = physical != null;
+        var name = physical?.Name ?? sim?.Name;
+        InspectorService.SwitchDevice(newUdid, name);
+
+        // If switched to physical and on sim-only tab, redirect
+        if (InspectorService.IsPhysicalDevice && (ActiveTab == SimInspectorTab.Capture || ActiveTab == SimInspectorTab.Tools))
+        {
+            ActiveTab = SimInspectorTab.Apps;
+            InspectorService.ActiveTab = ActiveTab;
+        }
     }
 
     private async Task LoadBootedSimulatorsAsync()
@@ -202,6 +246,12 @@
             bootedSimulators = all.Where(s => s.State?.Equals("Booted", StringComparison.OrdinalIgnoreCase) == true).ToList();
         }
         catch { }
+    }
+
+    private void LoadPhysicalDevices()
+    {
+        var snapshot = DeviceMonitor.Current;
+        physicalDevices = snapshot.ApplePhysicalDevices.ToList();
     }
 
     private void OnServiceStateChanged()

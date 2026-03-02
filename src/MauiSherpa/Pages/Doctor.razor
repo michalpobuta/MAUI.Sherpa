@@ -76,7 +76,7 @@
         </div>
         @if (contextExpanded)
         {
-            <div class="section-content">
+            <div class="section-content manifest-section">
                 <div class="context-list">
                     <div class="context-item full-width">
                         <span class="context-label">Working Directory</span>
@@ -297,7 +297,7 @@
         </div>
         @if (manifestsExpanded)
         {
-            <div class="section-content">
+            <div class="section-content manifest-section">
                 @if (report.Manifests.Count == 0)
                 {
                     <div class="empty-message">No workload manifests installed</div>
@@ -409,22 +409,10 @@ else
     h1 { margin-bottom: 1.25rem; font-size: 1.75rem; color: var(--text-primary); }
 
     .toolbar { margin-bottom: 1.25rem; display: flex; gap: 0.75rem; }
-    
-    .btn { padding: 0.625rem 1.25rem; border: none; border-radius: 0.375rem; font-size: 0.875rem; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 0.375rem; }
-    .btn-primary { background-color: var(--accent-primary); color: white; }
-    .btn-primary:hover:not(:disabled) { background-color: var(--accent-primary-hover); }
-    .btn-success { background-color: var(--accent-success); color: white; }
-    .btn-success:hover:not(:disabled) { background-color: var(--accent-success-hover); }
     .btn-copilot { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; }
     .btn-copilot:hover:not(:disabled) { background: linear-gradient(135deg, #4f46e5, #7c3aed); }
-    .btn-secondary { background-color: var(--text-muted); color: white; }
-    .btn-secondary:hover:not(:disabled) { background-color: var(--text-secondary); }
-    .btn-danger { background-color: var(--accent-danger); color: white; }
-    .btn-danger:hover:not(:disabled) { background-color: var(--accent-danger-hover); }
-    .btn-sm { padding: 0.25rem 0.75rem; font-size: 0.75rem; }
     .btn-fix { background-color: var(--accent-warning); color: white; }
     .btn-fix:hover:not(:disabled) { background-color: var(--accent-warning-hover); }
-    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
     
     .text-success { color: #38a169; }
     .text-warning { color: #d69e2e; }
@@ -437,7 +425,7 @@ else
 
     .summary-banner {
         padding: 1.25rem;
-        border-radius: 0.5rem;
+        border-radius: var(--card-radius, 1rem);
         margin-bottom: 1.25rem;
         display: flex;
         align-items: center;
@@ -452,9 +440,8 @@ else
 
     .section {
         background: var(--card-bg);
-        border-radius: 0.5rem;
+        border-radius: var(--card-radius);
         margin-bottom: 0.75rem;
-        box-shadow: var(--card-shadow);
         overflow: hidden;
     }
 
@@ -483,8 +470,8 @@ else
     .badge-secondary { background: var(--border-color); color: var(--text-secondary); }
     .badge-count { background: var(--border-color); color: var(--text-secondary); }
 
-    .context-list { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border-color); border-radius: 0.5rem; overflow: hidden; }
-    .context-item { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--border-color); }
+    .context-list { display: flex; flex-direction: column; }
+    .context-item { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.625rem 1.25rem; border-bottom: 1px solid var(--border-color); }
     .context-item:last-child { border-bottom: none; }
     .context-item.full-width { grid-column: 1 / -1; }
     .context-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
@@ -556,8 +543,10 @@ else
     .version-tag:hover { background: var(--bg-hover); }
     .version-tag.current { background: var(--status-success-bg); color: var(--status-success-text); cursor: default; }
 
-    .manifest-list { display: flex; flex-direction: column; gap: 0.75rem; }
-    .manifest-item { padding: 0.75rem; background: var(--bg-tertiary); border-radius: 0.375rem; }
+    .manifest-list { display: flex; flex-direction: column; }
+    .manifest-section { padding: 0; }
+    .manifest-item { padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border-color); background: transparent; }
+    .manifest-item:last-child { border-bottom: none; }
     .manifest-name { font-weight: 600; color: var(--text-primary); margin-bottom: 0.25rem; }
     .manifest-details { display: flex; align-items: center; gap: 0.75rem; }
     .manifest-counts { font-size: 0.8125rem; color: var(--text-muted); }
@@ -604,10 +593,9 @@ else
 
     .loading-state { 
         background: var(--card-bg); 
-        border-radius: 0.5rem; 
+        border-radius: var(--card-radius); 
         padding: 3.75rem 2.5rem; 
         text-align: center; 
-        box-shadow: var(--card-shadow);
         user-select: none;
     }
     .loading-spinner { 
@@ -623,7 +611,7 @@ else
         50% { opacity: 0.6; transform: scale(0.95); }
     }
 
-    .empty-state { background: var(--card-bg); border-radius: 0.5rem; padding: 3.75rem 2.5rem; text-align: center; box-shadow: var(--card-shadow); }
+    .empty-state { background: var(--card-bg); border-radius: var(--card-radius); padding: 3.75rem 2.5rem; text-align: center; }
     .empty-icon { font-size: 64px; margin-bottom: 1rem; }
     .empty-title { font-size: 1.25rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem; }
     .empty-description { color: var(--text-muted); font-size: 0.875rem; line-height: 1.6; }

@@ -7,6 +7,7 @@ public class SimInspectorService
     public bool IsOpen { get; set; }
     public string? ActiveUdid { get; set; }
     public string? ActiveSimName { get; set; }
+    public bool IsPhysicalDevice { get; set; }
     public SimInspectorTab ActiveTab { get; set; } = SimInspectorTab.Logs;
 
     private Window? _window;
@@ -14,12 +15,13 @@ public class SimInspectorService
     public event Action? StateChanged;
     public event Action<string>? DeviceChanged;
 
-    public void Open(string udid, string? simName = null, SimInspectorTab tab = SimInspectorTab.Logs)
+    public void Open(string udid, string? simName = null, SimInspectorTab tab = SimInspectorTab.Logs, bool isPhysicalDevice = false)
     {
         ActiveUdid = udid;
         ActiveSimName = simName ?? udid;
         ActiveTab = tab;
         IsOpen = true;
+        IsPhysicalDevice = isPhysicalDevice;
 
         if (_window != null)
         {
@@ -33,7 +35,8 @@ public class SimInspectorService
         }
 
         var tabName = tab.ToString().ToLowerInvariant();
-        var title = $"Simulator Inspector — {simName ?? udid}";
+        var titlePrefix = isPhysicalDevice ? "Device Inspector" : "Simulator Inspector";
+        var title = $"{titlePrefix} — {simName ?? udid}";
         var page = new InspectorPage($"/inspector/apple/{Uri.EscapeDataString(udid)}/{tabName}", title);
         _window = new Window(page)
         {

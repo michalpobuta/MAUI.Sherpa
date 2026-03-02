@@ -16,6 +16,7 @@ public class App : Application
     public App(IServiceProvider serviceProvider)
     {
         _serviceProvider = serviceProvider;
+        Pages.Forms.FormTheme.Register(this, serviceProvider.GetRequiredService<IThemeService>());
     }
 
     protected override Window CreateWindow(IActivationState? activationState)
@@ -60,6 +61,15 @@ public class App : Application
         // Eagerly resolve CopilotModalService so its constructor subscribes
         // to context events before the Blazor app loads.
         _serviceProvider.GetRequiredService<ICopilotModalService>();
+
+        // Suppress titlebar controls whenever any modal is pushed, restore when all are popped.
+        window.ModalPushed += (_, _) => toolbarService.SetToolbarSuppressed(true);
+        window.ModalPopped += (_, _) =>
+        {
+            var nav = window.Page?.Navigation;
+            if (nav == null || nav.ModalStack.Count == 0)
+                toolbarService.SetToolbarSuppressed(false);
+        };
 
         window.HandlerChanged += (s, e) =>
         {
