@@ -214,19 +214,34 @@ public class PublishProfileService : IPublishProfileService
                 progress?.Report("Fetching notarization credentials...");
                 try
                 {
-                    if (!string.IsNullOrEmpty(apple.NotarizationAppleIdSecretKey))
+                    // Apple ID: manual value or managed secret
+                    if (!string.IsNullOrEmpty(apple.NotarizationAppleIdManualValue))
+                    {
+                        AddMappedSecrets(secrets, apple.KeyMappings, "APPLE_NOTARIZATION_APPLE_ID", apple.NotarizationAppleIdManualValue);
+                    }
+                    else if (!string.IsNullOrEmpty(apple.NotarizationAppleIdSecretKey))
                     {
                         var val = await _managedSecrets.GetValueAsync(apple.NotarizationAppleIdSecretKey, ct);
                         if (val is not null)
                             AddMappedSecrets(secrets, apple.KeyMappings, "APPLE_NOTARIZATION_APPLE_ID", System.Text.Encoding.UTF8.GetString(val));
                     }
-                    if (!string.IsNullOrEmpty(apple.NotarizationPasswordSecretKey))
+                    // Password: manual value or managed secret
+                    if (!string.IsNullOrEmpty(apple.NotarizationPasswordManualValue))
+                    {
+                        AddMappedSecrets(secrets, apple.KeyMappings, "APPLE_NOTARIZATION_PASSWORD", apple.NotarizationPasswordManualValue);
+                    }
+                    else if (!string.IsNullOrEmpty(apple.NotarizationPasswordSecretKey))
                     {
                         var val = await _managedSecrets.GetValueAsync(apple.NotarizationPasswordSecretKey, ct);
                         if (val is not null)
                             AddMappedSecrets(secrets, apple.KeyMappings, "APPLE_NOTARIZATION_PASSWORD", System.Text.Encoding.UTF8.GetString(val));
                     }
-                    if (!string.IsNullOrEmpty(apple.NotarizationTeamIdSecretKey))
+                    // Team ID: manual value or managed secret
+                    if (!string.IsNullOrEmpty(apple.NotarizationTeamIdManualValue))
+                    {
+                        AddMappedSecrets(secrets, apple.KeyMappings, "APPLE_NOTARIZATION_TEAM_ID", apple.NotarizationTeamIdManualValue);
+                    }
+                    else if (!string.IsNullOrEmpty(apple.NotarizationTeamIdSecretKey))
                     {
                         var val = await _managedSecrets.GetValueAsync(apple.NotarizationTeamIdSecretKey, ct);
                         if (val is not null)

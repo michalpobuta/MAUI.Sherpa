@@ -2574,6 +2574,21 @@ public record PublishProfile(
     List<PublishProfileSecretMapping> SecretMappings,
     DateTime CreatedAt,
     DateTime UpdatedAt
+)
+{
+    /// <summary>Multiple publisher targets for this profile</summary>
+    public List<PublishProfilePublisher> Publishers { get; init; } = new();
+}
+
+/// <summary>
+/// A publisher + repository target within a publish profile
+/// </summary>
+public record PublishProfilePublisher(
+    string PublisherId,
+    string PublisherName,
+    string ProviderId,
+    string RepositoryId,
+    string RepositoryFullName
 );
 
 /// <summary>
@@ -2582,6 +2597,7 @@ public record PublishProfile(
 /// </summary>
 public record PublishProfileAppleConfig(
     string Label,
+    string? IdentityId,
     ApplePlatformType? Platform,
     AppleDistributionType? DistributionType,
     string? CertificateSerialNumber,
@@ -2592,6 +2608,9 @@ public record PublishProfileAppleConfig(
     string? NotarizationAppleIdSecretKey,
     string? NotarizationPasswordSecretKey,
     string? NotarizationTeamIdSecretKey,
+    string? NotarizationAppleIdManualValue,
+    string? NotarizationPasswordManualValue,
+    string? NotarizationTeamIdManualValue,
     Dictionary<string, List<string>> KeyMappings
 );
 
