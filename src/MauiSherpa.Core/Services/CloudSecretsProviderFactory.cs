@@ -221,12 +221,22 @@ public class CloudSecretsProviderFactory : ICloudSecretsProviderFactory
     private static IReadOnlyList<CloudProviderSettingInfo> GetVaultwardenSettings() => new[]
     {
         new CloudProviderSettingInfo(
-            "ServerUrl",
-            "Server URL",
-            "The Vaultwarden or Bitwarden server URL",
+            "ServerMode",
+            "Server",
+            "Choose Bitwarden cloud, Vaultwarden.net, or a custom self-hosted server",
             IsRequired: true,
             IsSecret: false,
-            Placeholder: "https://vault.example.com"),
+            DefaultValue: "custom",
+            Options: new[] { "bitwarden|Bitwarden Cloud", "vaultwarden|Vaultwarden.net", "custom|Custom Server" }),
+        new CloudProviderSettingInfo(
+            "ServerUrl",
+            "Server URL",
+            "Your self-hosted Vaultwarden or Bitwarden server URL",
+            IsRequired: false,
+            IsSecret: false,
+            Placeholder: "https://vault.example.com",
+            DependsOn: "ServerMode",
+            DependsOnValue: "custom"),
         new CloudProviderSettingInfo(
             "Email",
             "Email",

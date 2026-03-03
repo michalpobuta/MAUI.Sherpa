@@ -1,4 +1,5 @@
-using System.Diagnostics;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using MauiSherpa.Core.Interfaces;
@@ -6,19 +7,42 @@ using MauiSherpa.Core.Interfaces;
 namespace MauiSherpa.Core.Services;
 
 /// <summary>
-/// Cloud secrets provider for Vaultwarden / Bitwarden using the bw CLI.
-/// Stores secrets as hidden custom fields on a single Secure Note item.
+/// Cloud secrets provider for Vaultwarden / Bitwarden using the REST API directly.
+/// No CLI dependency — authenticates via OAuth2, derives encryption keys client-side,
+/// and stores secrets as encrypted custom fields on a Secure Note cipher item.
+/// Supports Bitwarden cloud, Vaultwarden.net, and custom self-hosted servers.
 /// </summary>
 public class VaultwardenProvider : ICloudSecretsProvider
 {
     private readonly CloudSecretsProviderConfig _config;
     private readonly ILoggingService _logger;
-    private string? _sessionToken;
+    private readonly HttpClient _httpClient;
+
+    // Cached session state
+    private string? _accessToken;
+    private string? _refreshToken;
+    private DateTime _tokenExpiry;
+    private byte[]? _encKey;
+    private byte[]? _macKey;
+
+    /// <summary>
+    /// Well-known server presets for the ServerMode setting.
+    /// </summary>
+    public const string ServerModeBitwarden = "bitwarden";
+    public const string ServerModeVaultwarden = "vaultwarden";
+    public const string ServerModeCustom = "custom";
+
+    public const string BitwardenCloudUrl = "https://vault.bitwarden.com";
+    public const string VaultwardenNetUrl = "https://vaultwarden.net";
 
     public VaultwardenProvider(CloudSecretsProviderConfig config, ILoggingService logger)
+        : this(config, logger, null) { }
+
+    internal VaultwardenProvider(CloudSecretsProviderConfig config, ILoggingService logger, HttpClient? httpClient)
     {
         _config = config;
         _logger = logger;
+        _httpClient = httpClient ?? new HttpClient();
     }
 
     public CloudSecretsProviderType ProviderType => CloudSecretsProviderType.Vaultwarden;
@@ -26,12 +50,26 @@ public class VaultwardenProvider : ICloudSecretsProvider
 
     #region Configuration Helpers
 
-    private string ServerUrl => _config.Settings.GetValueOrDefault("ServerUrl", "");
+    private string ServerMode => _config.Settings.GetValueOrDefault("ServerMode", ServerModeCustom);
+    private string CustomServerUrl => _config.Settings.GetValueOrDefault("ServerUrl", "").TrimEnd('/');
     private string Email => _config.Settings.GetValueOrDefault("Email", "");
     private string ClientId => _config.Settings.GetValueOrDefault("ClientId", "");
     private string ClientSecret => _config.Settings.GetValueOrDefault("ClientSecret", "");
     private string MasterPassword => _config.Settings.GetValueOrDefault("MasterPassword", "");
     private string ItemName => _config.Settings.GetValueOrDefault("ItemName", "MAUI.Sherpa");
+
+    /// <summary>
+    /// Resolve the effective server URL based on ServerMode.
+    /// </summary>
+    internal string ServerUrl => ServerMode switch
+    {
+        ServerModeBitwarden => BitwardenCloudUrl,
+        ServerModeVaultwarden => VaultwardenNetUrl,
+        _ => CustomServerUrl
+    };
+
+    private string ApiBaseUrl => $"{ServerUrl}/api";
+    private string IdentityUrl => $"{ServerUrl}/identity";
 
     #endregion
 
@@ -41,19 +79,7 @@ public class VaultwardenProvider : ICloudSecretsProvider
     {
         try
         {
-            if (!await IsCliInstalledAsync(cancellationToken))
-            {
-                _logger.LogError("Bitwarden CLI (bw) is not installed or not found in PATH");
-                return false;
-            }
-
-            var session = await EnsureSessionAsync(cancellationToken);
-            if (session == null)
-            {
-                _logger.LogError("Failed to authenticate with Vaultwarden");
-                return false;
-            }
-
+            await EnsureAuthenticatedAsync(cancellationToken);
             _logger.LogInformation($"Vaultwarden connection test successful for {ServerUrl}");
             return true;
         }
@@ -68,38 +94,23 @@ public class VaultwardenProvider : ICloudSecretsProvider
     {
         try
         {
-            var session = await EnsureSessionAsync(cancellationToken);
-            if (session == null) return false;
+            await EnsureAuthenticatedAsync(cancellationToken);
 
             var base64Value = Convert.ToBase64String(value);
-
-            // Get or create the Secure Note
-            var item = await GetOrCreateItemAsync(session, cancellationToken);
-            if (item == null)
+            var cipher = await GetOrCreateCipherAsync(cancellationToken);
+            if (cipher == null)
             {
-                _logger.LogError("Failed to get or create Vaultwarden item");
+                _logger.LogError("Failed to get or create Vaultwarden cipher");
                 return false;
             }
 
-            var itemId = item.Value.GetStringProperty("id");
-            if (itemId == null) return false;
+            var cipherId = cipher.Value.GetStringProperty("Id") ?? cipher.Value.GetStringProperty("id");
+            if (cipherId == null) return false;
 
-            // Update the fields array
-            var fields = GetFieldsList(item.Value);
+            var fields = GetFieldsList(cipher.Value);
             SetField(fields, key, base64Value);
 
-            // PUT the updated item back
-            var updatedItem = RebuildItemWithFields(item.Value, fields);
-            var (exitCode, output) = await RunBwAsync(
-                new[] { "edit", "item", itemId, "--session", session },
-                updatedItem, cancellationToken);
-
-            if (exitCode != 0)
-            {
-                _logger.LogError($"Vaultwarden store secret failed (exit code {exitCode}): {output}");
-                return false;
-            }
-
+            await UpdateCipherFieldsAsync(cipherId, cipher.Value, fields, cancellationToken);
             _logger.LogInformation($"Stored secret: {key}");
             return true;
         }
@@ -114,13 +125,12 @@ public class VaultwardenProvider : ICloudSecretsProvider
     {
         try
         {
-            var session = await EnsureSessionAsync(cancellationToken);
-            if (session == null) return null;
+            await EnsureAuthenticatedAsync(cancellationToken);
 
-            var item = await FindItemAsync(session, cancellationToken);
-            if (item == null) return null;
+            var cipher = await FindCipherAsync(cancellationToken);
+            if (cipher == null) return null;
 
-            var fieldValue = FindFieldValue(item.Value, key);
+            var fieldValue = FindFieldValue(cipher.Value, key);
             if (fieldValue == null) return null;
 
             return Convert.FromBase64String(fieldValue);
@@ -141,37 +151,26 @@ public class VaultwardenProvider : ICloudSecretsProvider
     {
         try
         {
-            var session = await EnsureSessionAsync(cancellationToken);
-            if (session == null) return false;
+            await EnsureAuthenticatedAsync(cancellationToken);
 
-            var item = await FindItemAsync(session, cancellationToken);
-            if (item == null)
+            var cipher = await FindCipherAsync(cancellationToken);
+            if (cipher == null)
             {
                 _logger.LogInformation($"Secret already deleted or not found: {key}");
                 return true;
             }
 
-            var itemId = item.Value.GetStringProperty("id");
-            if (itemId == null) return false;
+            var cipherId = cipher.Value.GetStringProperty("Id") ?? cipher.Value.GetStringProperty("id");
+            if (cipherId == null) return false;
 
-            var fields = GetFieldsList(item.Value);
+            var fields = GetFieldsList(cipher.Value);
             if (!RemoveField(fields, key))
             {
                 _logger.LogInformation($"Secret field not found: {key}");
                 return true;
             }
 
-            var updatedItem = RebuildItemWithFields(item.Value, fields);
-            var (exitCode, output) = await RunBwAsync(
-                new[] { "edit", "item", itemId, "--session", session },
-                updatedItem, cancellationToken);
-
-            if (exitCode != 0)
-            {
-                _logger.LogError($"Vaultwarden delete secret failed (exit code {exitCode}): {output}");
-                return false;
-            }
-
+            await UpdateCipherFieldsAsync(cipherId, cipher.Value, fields, cancellationToken);
             _logger.LogInformation($"Deleted secret: {key}");
             return true;
         }
@@ -186,13 +185,12 @@ public class VaultwardenProvider : ICloudSecretsProvider
     {
         try
         {
-            var session = await EnsureSessionAsync(cancellationToken);
-            if (session == null) return false;
+            await EnsureAuthenticatedAsync(cancellationToken);
 
-            var item = await FindItemAsync(session, cancellationToken);
-            if (item == null) return false;
+            var cipher = await FindCipherAsync(cancellationToken);
+            if (cipher == null) return false;
 
-            return FindFieldValue(item.Value, key) != null;
+            return FindFieldValue(cipher.Value, key) != null;
         }
         catch (Exception ex)
         {
@@ -205,13 +203,12 @@ public class VaultwardenProvider : ICloudSecretsProvider
     {
         try
         {
-            var session = await EnsureSessionAsync(cancellationToken);
-            if (session == null) return Array.Empty<string>();
+            await EnsureAuthenticatedAsync(cancellationToken);
 
-            var item = await FindItemAsync(session, cancellationToken);
-            if (item == null) return Array.Empty<string>();
+            var cipher = await FindCipherAsync(cancellationToken);
+            if (cipher == null) return Array.Empty<string>();
 
-            var labels = GetCustomFieldNames(item.Value);
+            var labels = GetCustomFieldNames(cipher.Value);
 
             if (!string.IsNullOrEmpty(prefix))
                 labels = labels.Where(l => l.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -227,69 +224,196 @@ public class VaultwardenProvider : ICloudSecretsProvider
 
     #endregion
 
-    #region Session Management
+    #region Authentication & Key Derivation
 
-    internal async Task<bool> IsCliInstalledAsync(CancellationToken cancellationToken = default)
+    private async Task EnsureAuthenticatedAsync(CancellationToken cancellationToken)
     {
-        try
+        if (_accessToken != null && _encKey != null && DateTime.UtcNow < _tokenExpiry)
+            return;
+
+        // If we have a refresh token and keys are still valid, try refreshing
+        if (_refreshToken != null && _encKey != null)
         {
-            var (exitCode, _) = await RunBwAsync(new[] { "--version" }, cancellationToken: cancellationToken);
-            return exitCode == 0;
+            try
+            {
+                await RefreshTokenAsync(cancellationToken);
+                return;
+            }
+            catch
+            {
+                // Fall through to full login
+            }
         }
-        catch
-        {
-            return false;
-        }
+
+        // Step 1: Prelogin to get KDF parameters
+        var (kdfIterations, kdfType) = await PreloginAsync(cancellationToken);
+
+        // Step 2: Derive master key from password + email
+        var masterKey = DeriveKey(MasterPassword, Email.ToLowerInvariant(), kdfIterations, kdfType);
+
+        // Step 3: Hash password for authentication
+        var hashedPassword = HashPassword(masterKey, MasterPassword);
+
+        // Step 4: Login to get access token and protected symmetric key
+        var (accessToken, refreshToken, expiresIn, protectedKey) =
+            await LoginAsync(hashedPassword, cancellationToken);
+
+        _accessToken = accessToken;
+        _refreshToken = refreshToken;
+        _tokenExpiry = DateTime.UtcNow.AddSeconds(expiresIn - 60); // 60s buffer
+
+        // Step 5: Decrypt the protected symmetric key to get encKey and macKey
+        DecryptProtectedKey(protectedKey, masterKey);
+
+        _logger.LogInformation($"Authenticated with Vaultwarden at {ServerUrl}");
     }
 
-    private async Task<string?> EnsureSessionAsync(CancellationToken cancellationToken)
+    internal async Task<(int Iterations, int KdfType)> PreloginAsync(CancellationToken cancellationToken)
     {
-        if (_sessionToken != null)
-            return _sessionToken;
+        var content = new StringContent(
+            JsonSerializer.Serialize(new { email = Email }),
+            Encoding.UTF8, "application/json");
 
-        // Configure server URL
-        var (cfgExit, cfgOut) = await RunBwAsync(
-            new[] { "config", "server", ServerUrl }, cancellationToken: cancellationToken);
-        if (cfgExit != 0)
+        var response = await _httpClient.PostAsync($"{ApiBaseUrl}/accounts/prelogin", content, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var doc = JsonSerializer.Deserialize<JsonElement>(json);
+
+        var iterations = doc.GetInt32Property("KdfIterations") ?? doc.GetInt32Property("kdfIterations") ?? 100000;
+        var kdfType = doc.GetInt32Property("Kdf") ?? doc.GetInt32Property("kdf") ?? 0;
+
+        return (iterations, kdfType);
+    }
+
+    /// <summary>
+    /// Derive the master key from password and email using PBKDF2-SHA256.
+    /// </summary>
+    internal static byte[] DeriveKey(string password, string salt, int iterations, int kdfType = 0)
+    {
+        // kdfType 0 = PBKDF2-SHA256 (most common for Vaultwarden/Bitwarden)
+        var saltBytes = Encoding.UTF8.GetBytes(salt);
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        using var pbkdf2 = new Rfc2898DeriveBytes(passwordBytes, saltBytes, iterations, HashAlgorithmName.SHA256);
+        return pbkdf2.GetBytes(32);
+    }
+
+    /// <summary>
+    /// Hash the master key with the password for server-side authentication.
+    /// Uses 1 round of PBKDF2(masterKey, password).
+    /// </summary>
+    internal static string HashPassword(byte[] masterKey, string password)
+    {
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        using var pbkdf2 = new Rfc2898DeriveBytes(masterKey, passwordBytes, 1, HashAlgorithmName.SHA256);
+        return Convert.ToBase64String(pbkdf2.GetBytes(32));
+    }
+
+    private async Task<(string AccessToken, string RefreshToken, int ExpiresIn, string ProtectedKey)> LoginAsync(
+        string hashedPassword, CancellationToken cancellationToken)
+    {
+        var deviceId = GenerateDeviceId();
+        var formData = new Dictionary<string, string>
         {
-            _logger.LogError($"Failed to configure bw server: {cfgOut}");
-            return null;
+            ["grant_type"] = "password",
+            ["username"] = Email,
+            ["password"] = hashedPassword,
+            ["scope"] = "api offline_access",
+            ["client_id"] = "connector",
+            ["deviceType"] = "3",
+            ["deviceIdentifier"] = deviceId,
+            ["deviceName"] = "MAUI Sherpa",
+            ["devicePushToken"] = ""
+        };
+
+        var content = new FormUrlEncodedContent(formData);
+        var response = await _httpClient.PostAsync($"{IdentityUrl}/connect/token", content, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                $"Vaultwarden login failed ({response.StatusCode}): {errorBody}");
         }
 
-        // Login with API key
-        var (loginExit, loginOut) = await RunBwAsync(
-            new[] { "login", "--apikey" },
-            cancellationToken: cancellationToken,
-            envVars: new Dictionary<string, string>
-            {
-                ["BW_CLIENTID"] = ClientId,
-                ["BW_CLIENTSECRET"] = ClientSecret
-            });
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var doc = JsonSerializer.Deserialize<JsonElement>(json);
 
-        // Exit code 1 with "already logged in" is OK
-        if (loginExit != 0 && !loginOut.Contains("already logged in", StringComparison.OrdinalIgnoreCase))
+        var accessToken = doc.GetStringProperty("access_token")
+            ?? throw new InvalidOperationException("No access_token in login response");
+        var refreshToken = doc.GetStringProperty("refresh_token") ?? "";
+        var expiresIn = doc.GetInt32Property("expires_in") ?? 3600;
+        var protectedKey = doc.GetStringProperty("Key")
+            ?? throw new InvalidOperationException("No Key in login response");
+
+        return (accessToken, refreshToken, expiresIn, protectedKey);
+    }
+
+    private async Task RefreshTokenAsync(CancellationToken cancellationToken)
+    {
+        var formData = new Dictionary<string, string>
         {
-            _logger.LogError($"Vaultwarden login failed (exit code {loginExit}): {loginOut}");
-            return null;
+            ["grant_type"] = "refresh_token",
+            ["client_id"] = "connector",
+            ["refresh_token"] = _refreshToken!
+        };
+
+        var content = new FormUrlEncodedContent(formData);
+        var response = await _httpClient.PostAsync($"{IdentityUrl}/connect/token", content, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var doc = JsonSerializer.Deserialize<JsonElement>(json);
+
+        _accessToken = doc.GetStringProperty("access_token");
+        _refreshToken = doc.GetStringProperty("refresh_token") ?? _refreshToken;
+        var expiresIn = doc.GetInt32Property("expires_in") ?? 3600;
+        _tokenExpiry = DateTime.UtcNow.AddSeconds(expiresIn - 60);
+    }
+
+    /// <summary>
+    /// Decrypt the protected symmetric key from the server using the master key.
+    /// The protected key is a CipherString in format "0.IV|CT" (AesCbc256_B64)
+    /// or "2.IV|CT|MAC" (AesCbc256_HmacSha256_B64).
+    /// Sets _encKey (32 bytes) and _macKey (32 bytes).
+    /// </summary>
+    internal void DecryptProtectedKey(string protectedKey, byte[] masterKey)
+    {
+        var dotIndex = protectedKey.IndexOf('.');
+        var encType = int.Parse(protectedKey[..dotIndex]);
+        var parts = protectedKey[(dotIndex + 1)..].Split('|');
+
+        byte[] iv = Convert.FromBase64String(parts[0]);
+        byte[] ct = Convert.FromBase64String(parts[1]);
+
+        byte[] decryptedKey;
+
+        if (encType == 0)
+        {
+            // AesCbc256_B64: no MAC, decrypt with masterKey directly
+            decryptedKey = AesDecrypt(ct, masterKey, iv);
+        }
+        else if (encType == 2)
+        {
+            // AesCbc256_HmacSha256_B64: stretch masterKey via HKDF first
+            var stretchedKey = HkdfStretch(masterKey);
+            var stretchEncKey = stretchedKey[..32];
+            var stretchMacKey = stretchedKey[32..];
+
+            byte[] mac = Convert.FromBase64String(parts[2]);
+            VerifyMac(stretchMacKey, iv, ct, mac);
+            decryptedKey = AesDecrypt(ct, stretchEncKey, iv);
+        }
+        else
+        {
+            throw new NotSupportedException($"Unsupported encryption type: {encType}");
         }
 
-        // Unlock vault to get session token
-        var (unlockExit, unlockOut) = await RunBwAsync(
-            new[] { "unlock", "--raw" },
-            cancellationToken: cancellationToken,
-            envVars: new Dictionary<string, string>
-            {
-                ["BW_PASSWORD"] = MasterPassword
-            });
+        if (decryptedKey.Length != 64)
+            throw new InvalidOperationException($"Expected 64-byte symmetric key, got {decryptedKey.Length}");
 
-        if (unlockExit != 0 || string.IsNullOrWhiteSpace(unlockOut))
-        {
-            _logger.LogError($"Vaultwarden unlock failed (exit code {unlockExit}): {unlockOut}");
-            return null;
-        }
-
-        _sessionToken = unlockOut.Trim();
-        return _sessionToken;
+        _encKey = decryptedKey[..32];
+        _macKey = decryptedKey[32..];
     }
 
     /// <summary>
@@ -297,191 +421,339 @@ public class VaultwardenProvider : ICloudSecretsProvider
     /// </summary>
     internal void InvalidateSession()
     {
-        _sessionToken = null;
+        _accessToken = null;
+        _refreshToken = null;
+        _encKey = null;
+        _macKey = null;
+    }
+
+    private static string GenerateDeviceId()
+    {
+        var machineBytes = Encoding.UTF8.GetBytes(Environment.MachineName + "-maui-sherpa");
+        var hash = SHA256.HashData(machineBytes);
+        return new Guid(hash[..16]).ToString();
     }
 
     #endregion
 
-    #region CLI Helpers
+    #region Bitwarden Crypto
 
-    internal async Task<(int ExitCode, string Output)> RunBwAsync(
-        string[] args,
-        string? stdin = null,
-        CancellationToken cancellationToken = default,
-        Dictionary<string, string>? envVars = null)
+    /// <summary>
+    /// AES-256-CBC decrypt with PKCS7 padding.
+    /// </summary>
+    internal static byte[] AesDecrypt(byte[] cipherText, byte[] key, byte[] iv)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "bw",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = stdin != null,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        foreach (var arg in args)
-            psi.ArgumentList.Add(arg);
-
-        // Disable interactive prompts
-        psi.Environment["BW_NOINTERACTION"] = "true";
-
-        if (envVars != null)
-        {
-            foreach (var kvp in envVars)
-                psi.Environment[kvp.Key] = kvp.Value;
-        }
-
-        using var process = new Process { StartInfo = psi };
-        var stdout = new StringBuilder();
-        var stderr = new StringBuilder();
-
-        process.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
-
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        if (stdin != null)
-        {
-            await process.StandardInput.WriteAsync(stdin);
-            process.StandardInput.Close();
-        }
-
-        await process.WaitForExitAsync(cancellationToken);
-
-        var output = stdout.ToString().Trim();
-        if (process.ExitCode != 0 && string.IsNullOrEmpty(output))
-            output = stderr.ToString().Trim();
-
-        return (process.ExitCode, output);
+        using var aes = Aes.Create();
+        aes.Key = key;
+        aes.IV = iv;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+        using var decryptor = aes.CreateDecryptor();
+        return decryptor.TransformFinalBlock(cipherText, 0, cipherText.Length);
     }
 
-    private async Task<JsonElement?> FindItemAsync(string session, CancellationToken cancellationToken)
+    /// <summary>
+    /// AES-256-CBC encrypt with PKCS7 padding.
+    /// </summary>
+    internal static byte[] AesEncrypt(byte[] plainText, byte[] key, byte[] iv)
     {
-        var (exitCode, output) = await RunBwAsync(
-            new[] { "list", "items", "--search", ItemName, "--session", session },
-            cancellationToken: cancellationToken);
+        using var aes = Aes.Create();
+        aes.Key = key;
+        aes.IV = iv;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+        using var encryptor = aes.CreateEncryptor();
+        return encryptor.TransformFinalBlock(plainText, 0, plainText.Length);
+    }
 
-        if (exitCode != 0 || string.IsNullOrWhiteSpace(output))
-            return null;
+    /// <summary>
+    /// Encrypt a plaintext string into a Bitwarden CipherString (type 2: AesCbc256_HmacSha256_B64).
+    /// Format: "2.{base64-IV}|{base64-CT}|{base64-MAC}"
+    /// </summary>
+    internal static string EncryptString(string plainText, byte[] encKey, byte[] macKey)
+    {
+        var iv = RandomNumberGenerator.GetBytes(16);
+        var pt = Encoding.UTF8.GetBytes(plainText);
+        var ct = AesEncrypt(pt, encKey, iv);
+        var mac = ComputeMac(macKey, iv, ct);
 
-        var items = JsonSerializer.Deserialize<JsonElement>(output);
-        if (items.ValueKind != JsonValueKind.Array)
-            return null;
+        return $"2.{Convert.ToBase64String(iv)}|{Convert.ToBase64String(ct)}|{Convert.ToBase64String(mac)}";
+    }
 
-        // Find the Secure Note (type 2) with matching name
-        foreach (var item in items.EnumerateArray())
+    /// <summary>
+    /// Decrypt a Bitwarden CipherString back to plaintext.
+    /// Supports type 0 (AesCbc256_B64) and type 2 (AesCbc256_HmacSha256_B64).
+    /// </summary>
+    internal static string DecryptString(string cipherString, byte[] encKey, byte[] macKey)
+    {
+        var dotIndex = cipherString.IndexOf('.');
+        var encType = int.Parse(cipherString[..dotIndex]);
+        var parts = cipherString[(dotIndex + 1)..].Split('|');
+
+        var iv = Convert.FromBase64String(parts[0]);
+        var ct = Convert.FromBase64String(parts[1]);
+
+        if (encType == 2 && parts.Length >= 3)
         {
-            var type = item.GetInt32Property("type");
-            var name = item.GetStringProperty("name");
+            var mac = Convert.FromBase64String(parts[2]);
+            VerifyMac(macKey, iv, ct, mac);
+        }
 
-            if (type == 2 && string.Equals(name, ItemName, StringComparison.OrdinalIgnoreCase))
-                return item;
+        var pt = AesDecrypt(ct, encKey, iv);
+        return Encoding.UTF8.GetString(pt);
+    }
+
+    /// <summary>
+    /// Compute HMAC-SHA256 over IV + ciphertext.
+    /// </summary>
+    internal static byte[] ComputeMac(byte[] macKey, byte[] iv, byte[] cipherText)
+    {
+        var data = new byte[iv.Length + cipherText.Length];
+        iv.CopyTo(data, 0);
+        cipherText.CopyTo(data, iv.Length);
+        return HMACSHA256.HashData(macKey, data);
+    }
+
+    /// <summary>
+    /// Verify HMAC-SHA256 MAC using constant-time comparison.
+    /// </summary>
+    internal static void VerifyMac(byte[] macKey, byte[] iv, byte[] cipherText, byte[] expectedMac)
+    {
+        var computedMac = ComputeMac(macKey, iv, cipherText);
+        if (!CryptographicOperations.FixedTimeEquals(computedMac, expectedMac))
+            throw new CryptographicException("MAC verification failed");
+    }
+
+    /// <summary>
+    /// HKDF stretch for type 2 protected symmetric key decryption.
+    /// Expands a 32-byte key into 64 bytes (32 enc + 32 mac) using HKDF-SHA256.
+    /// </summary>
+    internal static byte[] HkdfStretch(byte[] key)
+    {
+        var encKeyBytes = HKDF.Expand(HashAlgorithmName.SHA256, key, 32, Encoding.UTF8.GetBytes("enc"));
+        var macKeyBytes = HKDF.Expand(HashAlgorithmName.SHA256, key, 32, Encoding.UTF8.GetBytes("mac"));
+        var result = new byte[64];
+        encKeyBytes.CopyTo(result, 0);
+        macKeyBytes.CopyTo(result, 32);
+        return result;
+    }
+
+    #endregion
+
+    #region Cipher API
+
+    private async Task<JsonElement?> FindCipherAsync(CancellationToken cancellationToken)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, $"{ApiBaseUrl}/sync?excludeDomains=true");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+
+        var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var doc = JsonSerializer.Deserialize<JsonElement>(json);
+
+        if (!doc.TryGetProperty("Ciphers", out var ciphers) && !doc.TryGetProperty("ciphers", out ciphers))
+            return null;
+
+        foreach (var cipher in ciphers.EnumerateArray())
+        {
+            var type = cipher.GetInt32Property("Type") ?? cipher.GetInt32Property("type");
+            if (type != 2) continue; // Only Secure Notes
+
+            var encryptedName = cipher.GetStringProperty("Name") ?? cipher.GetStringProperty("name");
+            if (encryptedName == null) continue;
+
+            try
+            {
+                var decryptedName = DecryptString(encryptedName, _encKey!, _macKey!);
+                if (string.Equals(decryptedName, ItemName, StringComparison.OrdinalIgnoreCase))
+                    return cipher;
+            }
+            catch
+            {
+                // Skip items we can't decrypt
+            }
         }
 
         return null;
     }
 
-    private async Task<JsonElement?> GetOrCreateItemAsync(string session, CancellationToken cancellationToken)
+    private async Task<JsonElement?> GetOrCreateCipherAsync(CancellationToken cancellationToken)
     {
-        var existing = await FindItemAsync(session, cancellationToken);
-        if (existing != null)
-            return existing;
+        var existing = await FindCipherAsync(cancellationToken);
+        if (existing != null) return existing;
 
         _logger.LogInformation($"Creating Vaultwarden Secure Note '{ItemName}'");
 
-        // Create a new Secure Note (type 2)
-        var newItem = JsonSerializer.Serialize(new
+        var encryptedName = EncryptString(ItemName, _encKey!, _macKey!);
+
+        var newCipher = new
         {
             type = 2,
-            name = ItemName,
-            notes = "",
+            name = encryptedName,
+            notes = (string?)null,
             secureNote = new { type = 0 },
             fields = Array.Empty<object>()
-        });
+        };
 
-        // bw create item expects base64-encoded JSON on stdin
-        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(newItem));
-        var (exitCode, output) = await RunBwAsync(
-            new[] { "create", "item", encoded, "--session", session },
-            cancellationToken: cancellationToken);
-
-        if (exitCode != 0)
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{ApiBaseUrl}/ciphers")
         {
-            _logger.LogError($"Failed to create Vaultwarden item: {output}");
-            return null;
-        }
+            Content = new StringContent(JsonSerializer.Serialize(newCipher), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
 
-        if (string.IsNullOrWhiteSpace(output))
-            return null;
+        var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
 
-        return JsonSerializer.Deserialize<JsonElement>(output);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        return JsonSerializer.Deserialize<JsonElement>(json);
+    }
+
+    private async Task UpdateCipherFieldsAsync(string cipherId, JsonElement originalCipher,
+        List<Dictionary<string, object?>> fields, CancellationToken cancellationToken)
+    {
+        // Encrypt each field name and value
+        var encryptedFields = fields.Select(f => new
+        {
+            name = EncryptString(f["name"]?.ToString() ?? "", _encKey!, _macKey!),
+            value = EncryptString(f["value"]?.ToString() ?? "", _encKey!, _macKey!),
+            type = Convert.ToInt32(f["type"] ?? 1)
+        }).ToArray();
+
+        var type = originalCipher.GetInt32Property("Type") ?? originalCipher.GetInt32Property("type") ?? 2;
+        var name = originalCipher.GetStringProperty("Name") ?? originalCipher.GetStringProperty("name");
+        var notes = originalCipher.GetStringProperty("Notes") ?? originalCipher.GetStringProperty("notes");
+
+        var updatePayload = new
+        {
+            type,
+            name,
+            notes,
+            secureNote = new { type = 0 },
+            fields = encryptedFields
+        };
+
+        var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiBaseUrl}/ciphers/{cipherId}")
+        {
+            Content = new StringContent(JsonSerializer.Serialize(updatePayload), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+
+        var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
     }
 
     #endregion
 
-    #region JSON Field Helpers
+    #region JSON Field Helpers (decrypt-aware)
 
-    internal static string? FindFieldValue(JsonElement item, string key)
+    /// <summary>
+    /// Find a decrypted field value by key from a cipher's encrypted fields.
+    /// </summary>
+    internal string? FindFieldValue(JsonElement cipher, string key)
     {
-        if (!item.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Array)
+        if (!cipher.TryGetProperty("Fields", out var fields) && !cipher.TryGetProperty("fields", out fields))
+            return null;
+        if (fields.ValueKind != JsonValueKind.Array)
             return null;
 
         foreach (var field in fields.EnumerateArray())
         {
-            var name = field.GetStringProperty("name");
-            if (string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
-                return field.GetStringProperty("value");
+            var encName = field.GetStringProperty("Name") ?? field.GetStringProperty("name");
+            if (encName == null) continue;
+
+            try
+            {
+                var decryptedName = DecryptString(encName, _encKey!, _macKey!);
+                if (string.Equals(decryptedName, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    var encValue = field.GetStringProperty("Value") ?? field.GetStringProperty("value");
+                    return encValue != null ? DecryptString(encValue, _encKey!, _macKey!) : null;
+                }
+            }
+            catch
+            {
+                // Skip fields we can't decrypt
+            }
         }
 
         return null;
     }
 
-    internal static List<string> GetCustomFieldNames(JsonElement item)
+    /// <summary>
+    /// Get all decrypted custom field names from a cipher.
+    /// </summary>
+    internal List<string> GetCustomFieldNames(JsonElement cipher)
     {
         var names = new List<string>();
 
-        if (!item.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Array)
+        if (!cipher.TryGetProperty("Fields", out var fields) && !cipher.TryGetProperty("fields", out fields))
+            return names;
+        if (fields.ValueKind != JsonValueKind.Array)
             return names;
 
         foreach (var field in fields.EnumerateArray())
         {
-            var name = field.GetStringProperty("name");
-            if (!string.IsNullOrEmpty(name))
-                names.Add(name);
+            var encName = field.GetStringProperty("Name") ?? field.GetStringProperty("name");
+            if (encName == null) continue;
+
+            try
+            {
+                var decryptedName = DecryptString(encName, _encKey!, _macKey!);
+                if (!string.IsNullOrEmpty(decryptedName))
+                    names.Add(decryptedName);
+            }
+            catch
+            {
+                // Skip fields we can't decrypt
+            }
         }
 
         return names;
     }
 
     /// <summary>
-    /// Parse the fields array into a mutable list of dictionaries.
+    /// Parse encrypted fields into a mutable list with decrypted names and values.
     /// </summary>
-    internal static List<Dictionary<string, object?>> GetFieldsList(JsonElement item)
+    internal List<Dictionary<string, object?>> GetFieldsList(JsonElement cipher)
     {
         var result = new List<Dictionary<string, object?>>();
 
-        if (!item.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Array)
+        if (!cipher.TryGetProperty("Fields", out var fields) && !cipher.TryGetProperty("fields", out fields))
+            return result;
+        if (fields.ValueKind != JsonValueKind.Array)
             return result;
 
         foreach (var field in fields.EnumerateArray())
         {
-            var dict = new Dictionary<string, object?>
+            var encName = field.GetStringProperty("Name") ?? field.GetStringProperty("name");
+            var encValue = field.GetStringProperty("Value") ?? field.GetStringProperty("value");
+            var fieldType = field.GetInt32Property("Type") ?? field.GetInt32Property("type") ?? 1;
+
+            if (encName == null) continue;
+
+            try
             {
-                ["name"] = field.GetStringProperty("name"),
-                ["value"] = field.GetStringProperty("value"),
-                ["type"] = field.GetInt32Property("type") ?? 1
-            };
-            result.Add(dict);
+                var dict = new Dictionary<string, object?>
+                {
+                    ["name"] = DecryptString(encName, _encKey!, _macKey!),
+                    ["value"] = encValue != null ? DecryptString(encValue, _encKey!, _macKey!) : null,
+                    ["type"] = fieldType
+                };
+                result.Add(dict);
+            }
+            catch
+            {
+                // Skip fields we can't decrypt
+            }
         }
 
         return result;
     }
 
     /// <summary>
-    /// Add or update a field in the mutable fields list.
+    /// Add or update a field in the mutable fields list (plaintext names/values).
     /// </summary>
     internal static void SetField(List<Dictionary<string, object?>> fields, string key, string value)
     {
@@ -516,22 +788,6 @@ public class VaultwardenProvider : ICloudSecretsProvider
 
         fields.Remove(existing);
         return true;
-    }
-
-    /// <summary>
-    /// Rebuild the item JSON with an updated fields array, preserving all other properties.
-    /// Returns base64-encoded JSON string for bw edit item.
-    /// </summary>
-    internal static string RebuildItemWithFields(JsonElement originalItem, List<Dictionary<string, object?>> fields)
-    {
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(originalItem.GetRawText())
-            ?? new Dictionary<string, JsonElement>();
-
-        // Replace the fields array
-        dict["fields"] = JsonSerializer.Deserialize<JsonElement>(JsonSerializer.Serialize(fields));
-
-        var json = JsonSerializer.Serialize(dict);
-        return Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
     }
 
     #endregion

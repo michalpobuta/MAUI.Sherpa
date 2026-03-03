@@ -460,9 +460,18 @@
                         }
                         @if (provider.ProviderType == CloudSecretsProviderType.Vaultwarden)
                         {
+                            @{
+                                var serverMode = provider.Settings.GetValueOrDefault("ServerMode", "custom");
+                                var serverDisplay = serverMode switch
+                                {
+                                    "bitwarden" => "Bitwarden Cloud",
+                                    "vaultwarden" => "Vaultwarden.net",
+                                    _ => provider.Settings.GetValueOrDefault("ServerUrl", "")
+                                };
+                            }
                             <div class="detail-item">
                                 <span class="detail-label">SERVER</span>
-                                <span class="detail-value mono"><span class="@(demoMode ? "demo-blur" : "")">@provider.Settings.GetValueOrDefault("ServerUrl", "")</span></span>
+                                <span class="detail-value mono"><span class="@(demoMode ? "demo-blur" : "")">@serverDisplay</span></span>
                             </div>
                             <div class="detail-item">
                                 <span class="detail-label">EMAIL</span>

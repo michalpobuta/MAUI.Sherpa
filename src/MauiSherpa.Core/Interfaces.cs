@@ -2128,7 +2128,10 @@ public record CloudProviderSettingInfo(
     bool IsRequired,
     bool IsSecret,
     string? DefaultValue = null,
-    string? Placeholder = null
+    string? Placeholder = null,
+    string[]? Options = null,
+    string? DependsOn = null,
+    string? DependsOnValue = null
 );
 
 /// <summary>
