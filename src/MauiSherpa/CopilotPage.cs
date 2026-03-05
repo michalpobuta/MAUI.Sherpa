@@ -5,6 +5,8 @@ using Microsoft.Maui.Platform.MacOS;
 using Microsoft.Maui.Platform.MacOS.Controls;
 #elif LINUXGTK
 using Platform.Maui.Linux.Gtk4.Platform;
+using Platform.Maui.Linux.Gtk4.BlazorWebView;
+using Microsoft.AspNetCore.Components.WebView.Maui;
 #else
 using Microsoft.AspNetCore.Components.WebView.Maui;
 #endif
@@ -81,12 +83,12 @@ public class CopilotPage : ContentPage
         });
         webView = blazorWebView;
 #elif LINUXGTK
-        var blazorWebView = new Platform.Maui.Linux.Gtk4.BlazorWebView.BlazorWebView
+        var blazorWebView = new GtkBlazorWebView
         {
             HostPage = "wwwroot/index.html",
             StartPath = "/copilot-modal",
         };
-        blazorWebView.RootComponents.Add(new Platform.Maui.Linux.Gtk4.BlazorWebView.BlazorRootComponent
+        blazorWebView.RootComponents.Add(new RootComponent
         {
             Selector = "#app",
             ComponentType = typeof(Components.CopilotModalApp)
