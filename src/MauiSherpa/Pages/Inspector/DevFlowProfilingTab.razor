@@ -1,0 +1,856 @@
+@using System.Globalization
+@using MauiSherpa.Core.Models.DevFlow
+@using MauiSherpa.Core.Services
+@implements IDisposable
+
+<div class="profiling-layout">
+    <div class="pane-header">
+        <div class="pane-title">
+            <span>Profiler</span>
+            <span class="status-pill @((session?.IsActive == true) ? "running" : "stopped")">
+                @((session?.IsActive == true) ? "Running" : "Stopped")
+            </span>
+            @if (session != null)
+            {
+                <span class="session-pill" title="@session.SessionId">Session @ShortSessionId(session.SessionId)</span>
+            }
+        </div>
+        <div class="pane-actions">
+            <label class="inline-field">
+                Interval (ms)
+                <input type="number"
+                       min="50"
+                       max="60000"
+                       step="50"
+                       @bind="sampleIntervalMs"
+                       disabled="@(session?.IsActive == true || isBusy)" />
+            </label>
+            <label class="live-toggle">
+                <input type="checkbox" @bind="livePolling" @bind:after="OnLivePollingChanged" />
+                Live polling
+            </label>
+            <button class="btn-icon" @onclick="RefreshCapabilitiesAsync" disabled="@isBusy" title="Refresh capabilities">
+                <i class="fas fa-arrows-rotate"></i>
+            </button>
+            <button class="btn btn-primary btn-sm"
+                    @onclick="StartAsync"
+                    disabled="@(!CanStart)">
+                <i class="fas fa-play"></i> Start
+            </button>
+            <button class="btn btn-secondary btn-sm"
+                    @onclick="StopAsync"
+                    disabled="@(!CanStop)">
+                <i class="fas fa-stop"></i> Stop
+            </button>
+            <button class="btn-icon" @onclick="ResetView" disabled="@isBusy" title="Clear local chart history">
+                <i class="fas fa-eraser"></i>
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <div class="error-banner">
+            <i class="fas fa-triangle-exclamation"></i>
+            <span>@errorMessage</span>
+        </div>
+    }
+
+    @if (capabilities == null)
+    {
+        <div class="empty-state">
+            <i class="fas fa-spinner fa-spin"></i>
+            <span>Loading profiler capabilities...</span>
+        </div>
+    }
+    else if (!capabilities.Available)
+    {
+        <div class="empty-state">
+            <i class="fas fa-ban"></i>
+            <div>Profiler is not available for this app session.</div>
+            <ul class="unavailable-reasons">
+                @if (!capabilities.SupportedInBuild)
+                {
+                    <li>The app is not running a DEBUG build.</li>
+                }
+                @if (!capabilities.FeatureEnabled)
+                {
+                    <li>Enable profiler by setting <code>EnableProfiler = true</code> in your agent options.</li>
+                }
+            </ul>
+        </div>
+    }
+    else
+    {
+        <div class="metric-cards">
+            <div class="metric-card">
+                <div class="metric-label">FPS</div>
+                <div class="metric-value">@FormatMetric(LatestSample?.Fps, "fps")</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Frame P95</div>
+                <div class="metric-value">@FormatMetric(LatestSample?.FrameTimeMsP95, "ms")</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Managed Heap</div>
+                <div class="metric-value">@FormatBytes(LatestSample?.ManagedBytes)</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">CPU</div>
+                <div class="metric-value">@FormatMetric(LatestSample?.CpuPercent, "%")</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Threads</div>
+                <div class="metric-value">@(LatestSample?.ThreadCount?.ToString(CultureInfo.InvariantCulture) ?? "—")</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">GC Δ (0/1/2)</div>
+                <div class="metric-value">@($"{gcDelta.Gc0}/{gcDelta.Gc1}/{gcDelta.Gc2}")</div>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span>FPS trend</span>
+                    <span>@FormatMetric(LatestSample?.Fps, "fps")</span>
+                </div>
+                <svg viewBox="0 0 320 96" class="chart-svg">
+                    @if (!string.IsNullOrEmpty(fpsPoints))
+                    {
+                        <polyline points="@fpsPoints" stroke="#22c55e" stroke-width="2" fill="none" />
+                    }
+                </svg>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span>Frame P95 (ms)</span>
+                    <span>@FormatMetric(LatestSample?.FrameTimeMsP95, "ms")</span>
+                </div>
+                <svg viewBox="0 0 320 96" class="chart-svg">
+                    @if (!string.IsNullOrEmpty(frameP95Points))
+                    {
+                        <polyline points="@frameP95Points" stroke="#f59e0b" stroke-width="2" fill="none" />
+                    }
+                </svg>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span>Managed heap</span>
+                    <span>@FormatBytes(LatestSample?.ManagedBytes)</span>
+                </div>
+                <svg viewBox="0 0 320 96" class="chart-svg">
+                    @if (!string.IsNullOrEmpty(memoryPoints))
+                    {
+                        <polyline points="@memoryPoints" stroke="#8b5cf6" stroke-width="2" fill="none" />
+                    }
+                </svg>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span>CPU (%)</span>
+                    <span>@FormatMetric(LatestSample?.CpuPercent, "%")</span>
+                </div>
+                <svg viewBox="0 0 320 96" class="chart-svg">
+                    @if (!string.IsNullOrEmpty(cpuPoints))
+                    {
+                        <polyline points="@cpuPoints" stroke="#3b82f6" stroke-width="2" fill="none" />
+                    }
+                </svg>
+            </div>
+        </div>
+
+        <div class="bottom-grid">
+            <div class="markers-panel">
+                <div class="panel-header">
+                    <span>Markers (@markers.Count)</span>
+                    <select class="marker-filter" @bind="markerTypeFilter">
+                        <option value="">All types</option>
+                        @foreach (var markerType in MarkerTypes)
+                        {
+                            <option value="@markerType">@markerType</option>
+                        }
+                    </select>
+                </div>
+                <div class="marker-list">
+                    @if (FilteredMarkers.Any())
+                    {
+                        @foreach (var marker in FilteredMarkers)
+                        {
+                            <div class="marker-row">
+                                <span class="marker-time">@marker.TsUtc.ToLocalTime().ToString("HH:mm:ss.fff")</span>
+                                <span class="marker-type">@marker.Type</span>
+                                <span class="marker-name">@marker.Name</span>
+                                @if (!string.IsNullOrWhiteSpace(marker.PayloadJson))
+                                {
+                                    <span class="marker-payload" title="@marker.PayloadJson">@TrimText(marker.PayloadJson, 72)</span>
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="empty-inline">No markers yet.</div>
+                    }
+                </div>
+            </div>
+
+            <div class="capabilities-panel">
+                <div class="panel-header">
+                    <span>Capabilities</span>
+                    <span class="platform-pill">@capabilities.Platform</span>
+                </div>
+                <div class="cap-grid">
+                    <div class="cap-row"><span>Managed memory</span><span class="@SupportCss(capabilities.ManagedMemorySupported)">@(capabilities.ManagedMemorySupported ? "yes" : "no")</span></div>
+                    <div class="cap-row"><span>GC counters</span><span class="@SupportCss(capabilities.GcSupported)">@(capabilities.GcSupported ? "yes" : "no")</span></div>
+                    <div class="cap-row"><span>CPU %</span><span class="@SupportCss(capabilities.CpuPercentSupported)">@(capabilities.CpuPercentSupported ? "yes" : "no")</span></div>
+                    <div class="cap-row"><span>Thread count</span><span class="@SupportCss(capabilities.ThreadCountSupported)">@(capabilities.ThreadCountSupported ? "yes" : "no")</span></div>
+                    <div class="cap-row"><span>FPS</span><span class="@SupportCss(capabilities.FpsSupported)">@(capabilities.FpsSupported ? "yes" : "no")</span></div>
+                    <div class="cap-row"><span>Frame timings</span><span class="@SupportCss(true)">@(capabilities.FrameTimingsEstimated ? "estimated" : "native")</span></div>
+                </div>
+                <div class="session-meta">
+                    @if (session != null)
+                    {
+                        <div><strong>Started:</strong> @session.StartedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                        <div><strong>Interval:</strong> @session.SampleIntervalMs ms</div>
+                    }
+                    <div><strong>Samples in view:</strong> @samples.Count</div>
+                    <div><strong>Markers in view:</strong> @markers.Count</div>
+                    <div><strong>Frame quality:</strong> @(LatestSample?.FrameQuality ?? "—")</div>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public DevFlowAgentClient Client { get; set; } = null!;
+
+    private const int MaxSampleHistory = 600;
+    private const int MaxMarkerHistory = 300;
+    private readonly List<DevFlowProfilerSample> samples = new();
+    private readonly List<DevFlowProfilerMarker> markers = new();
+
+    private DevFlowProfilerCapabilities? capabilities;
+    private DevFlowProfilerSessionInfo? session;
+    private Timer? pollTimer;
+    private long sampleCursor;
+    private long markerCursor;
+    private int sampleIntervalMs = 500;
+    private bool livePolling = true;
+    private bool isBusy;
+    private int pollInFlight;
+    private string markerTypeFilter = string.Empty;
+    private string? errorMessage;
+
+    private bool CanStart => !isBusy && capabilities?.Available == true && session?.IsActive != true;
+    private bool CanStop => !isBusy && session?.IsActive == true;
+    private DevFlowProfilerSample? LatestSample => samples.Count > 0 ? samples[^1] : null;
+    private (int Gc0, int Gc1, int Gc2) gcDelta => GetGcDelta();
+    private string fpsPoints => GetSparklinePoints(s => s.Fps);
+    private string frameP95Points => GetSparklinePoints(s => s.FrameTimeMsP95);
+    private string memoryPoints => GetSparklinePoints(s => s.ManagedBytes);
+    private string cpuPoints => GetSparklinePoints(s => s.CpuPercent);
+
+    private IEnumerable<string> MarkerTypes =>
+        markers.Select(m => m.Type)
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase);
+
+    private IEnumerable<DevFlowProfilerMarker> FilteredMarkers =>
+        markers.Where(m => string.IsNullOrWhiteSpace(markerTypeFilter) || m.Type.Equals(markerTypeFilter, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(m => m.TsUtc)
+            .Take(160);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshCapabilitiesAsync();
+        if (capabilities?.Available == true)
+        {
+            await PollSamplesAsync();
+            if (livePolling && session?.IsActive == true)
+                StartPolling();
+        }
+    }
+
+    private async Task RefreshCapabilitiesAsync()
+    {
+        try
+        {
+            capabilities = await Client.GetProfilerCapabilitiesAsync();
+            if (capabilities == null)
+            {
+                errorMessage = "Could not read profiler capabilities from the agent.";
+                return;
+            }
+
+            errorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Capabilities request failed: {ex.Message}";
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        if (!CanStart)
+            return;
+
+        isBusy = true;
+        errorMessage = null;
+        try
+        {
+            sampleIntervalMs = Math.Clamp(sampleIntervalMs, 50, 60_000);
+            var started = await Client.StartProfilerAsync(sampleIntervalMs);
+            if (started?.Session == null)
+            {
+                errorMessage = "Profiler could not be started. Check app agent logs for details.";
+                return;
+            }
+
+            session = started.Session;
+            if (started.Capabilities != null)
+                capabilities = started.Capabilities;
+
+            sampleCursor = 0;
+            markerCursor = 0;
+            samples.Clear();
+            markers.Clear();
+
+            await PollSamplesAsync();
+            if (livePolling && session.IsActive)
+                StartPolling();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Profiler start failed: {ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task StopAsync()
+    {
+        if (!CanStop)
+            return;
+
+        isBusy = true;
+        errorMessage = null;
+        try
+        {
+            var stopped = await Client.StopProfilerAsync();
+            if (stopped?.Session != null)
+                session = stopped.Session;
+
+            await PollSamplesAsync();
+            StopPolling();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Profiler stop failed: {ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+            StateHasChanged();
+        }
+    }
+
+    private Task OnLivePollingChanged()
+    {
+        if (livePolling && session?.IsActive == true)
+            StartPolling();
+        else
+            StopPolling();
+
+        return Task.CompletedTask;
+    }
+
+    private void StartPolling()
+    {
+        StopPolling();
+        var interval = TimeSpan.FromMilliseconds(Math.Clamp(sampleIntervalMs / 2, 250, 1000));
+        pollTimer = new Timer(_ => _ = InvokeAsync(PollSamplesAsync), null, TimeSpan.Zero, interval);
+    }
+
+    private void StopPolling()
+    {
+        pollTimer?.Dispose();
+        pollTimer = null;
+    }
+
+    private async Task PollSamplesAsync()
+    {
+        if (Interlocked.CompareExchange(ref pollInFlight, 1, 0) != 0)
+            return;
+
+        try
+        {
+            var batch = await Client.GetProfilerSamplesAsync(sampleCursor, markerCursor, 240);
+            if (batch == null)
+                return;
+
+            sampleCursor = batch.SampleCursor;
+            markerCursor = batch.MarkerCursor;
+
+            if (!string.IsNullOrWhiteSpace(batch.SessionId))
+            {
+                session ??= new DevFlowProfilerSessionInfo
+                {
+                    SessionId = batch.SessionId,
+                    StartedAtUtc = DateTimeOffset.UtcNow,
+                    SampleIntervalMs = sampleIntervalMs,
+                };
+                session.SessionId = batch.SessionId;
+                session.IsActive = batch.IsActive;
+            }
+            else if (session != null)
+            {
+                session.IsActive = batch.IsActive;
+            }
+
+            if (batch.Samples.Count > 0)
+            {
+                samples.AddRange(batch.Samples);
+                if (samples.Count > MaxSampleHistory)
+                    samples.RemoveRange(0, samples.Count - MaxSampleHistory);
+            }
+
+            if (batch.Markers.Count > 0)
+            {
+                markers.AddRange(batch.Markers);
+                if (markers.Count > MaxMarkerHistory)
+                    markers.RemoveRange(0, markers.Count - MaxMarkerHistory);
+            }
+
+            if (!batch.IsActive)
+                StopPolling();
+
+            errorMessage = null;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Profiler polling failed: {ex.Message}";
+            StopPolling();
+            StateHasChanged();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref pollInFlight, 0);
+        }
+    }
+
+    private void ResetView()
+    {
+        samples.Clear();
+        markers.Clear();
+        sampleCursor = 0;
+        markerCursor = 0;
+        markerTypeFilter = string.Empty;
+        StateHasChanged();
+    }
+
+    private (int Gc0, int Gc1, int Gc2) GetGcDelta()
+    {
+        if (samples.Count < 2)
+            return (0, 0, 0);
+
+        var prev = samples[^2];
+        var curr = samples[^1];
+        return (
+            Math.Max(0, curr.Gc0 - prev.Gc0),
+            Math.Max(0, curr.Gc1 - prev.Gc1),
+            Math.Max(0, curr.Gc2 - prev.Gc2)
+        );
+    }
+
+    private string GetSparklinePoints(Func<DevFlowProfilerSample, double?> selector, double width = 320, double height = 96)
+    {
+        if (samples.Count == 0)
+            return string.Empty;
+
+        var points = samples
+            .Select((sample, index) => new { Index = index, Value = selector(sample) })
+            .Where(x => x.Value.HasValue)
+            .ToList();
+
+        if (points.Count == 0)
+            return string.Empty;
+
+        var min = points.Min(p => p.Value!.Value);
+        var max = points.Max(p => p.Value!.Value);
+        var range = Math.Max(max - min, 0.00001);
+        var span = Math.Max(1, samples.Count - 1);
+
+        return string.Join(" ",
+            points.Select(point =>
+            {
+                var x = point.Index / (double)span * width;
+                var normalized = (point.Value!.Value - min) / range;
+                var y = height - (normalized * height);
+                return $"{x.ToString("F2", CultureInfo.InvariantCulture)},{y.ToString("F2", CultureInfo.InvariantCulture)}";
+            }));
+    }
+
+    private static string FormatMetric(double? value, string suffix)
+    {
+        if (!value.HasValue)
+            return "—";
+        return $"{value.Value.ToString("F1", CultureInfo.InvariantCulture)} {suffix}";
+    }
+
+    private static string FormatBytes(long? bytes)
+    {
+        if (!bytes.HasValue)
+            return "—";
+
+        var value = bytes.Value;
+        if (value < 1024)
+            return $"{value} B";
+        if (value < 1024 * 1024)
+            return $"{value / 1024d:F1} KB";
+        if (value < 1024L * 1024L * 1024L)
+            return $"{value / (1024d * 1024d):F1} MB";
+        return $"{value / (1024d * 1024d * 1024d):F2} GB";
+    }
+
+    private static string SupportCss(bool supported) => supported ? "support-yes" : "support-no";
+
+    private static string ShortSessionId(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return "n/a";
+        return sessionId.Length <= 10 ? sessionId : sessionId[..10];
+    }
+
+    private static string TrimText(string input, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(input) || input.Length <= maxLength)
+            return input;
+        return $"{input[..maxLength]}...";
+    }
+
+    public void Dispose()
+    {
+        StopPolling();
+    }
+}
+
+<style>
+    .profiling-layout {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        overflow: auto;
+    }
+
+    .pane-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.5rem 0.75rem;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-color);
+        font-size: 0.85rem;
+        font-weight: 600;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+
+    .pane-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .pane-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+    }
+
+    .inline-field {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+    }
+
+    .inline-field input {
+        width: 90px;
+        font-size: 0.75rem;
+        padding: 0.15rem 0.35rem;
+        border-radius: 4px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-primary);
+        color: var(--text-primary);
+    }
+
+    .live-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+    }
+
+    .btn-icon {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        cursor: pointer;
+        padding: 0.25rem 0.4rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+    }
+
+    .btn-icon:hover {
+        color: var(--text-primary);
+        background: var(--bg-tertiary);
+    }
+
+    .status-pill, .session-pill, .platform-pill {
+        font-size: 0.7rem;
+        padding: 0.1rem 0.4rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-color);
+        color: var(--text-secondary);
+    }
+
+    .status-pill.running {
+        color: #22c55e;
+        border-color: rgba(34, 197, 94, 0.45);
+        background: rgba(34, 197, 94, 0.12);
+    }
+
+    .status-pill.stopped {
+        color: #ef4444;
+        border-color: rgba(239, 68, 68, 0.4);
+        background: rgba(239, 68, 68, 0.1);
+    }
+
+    .error-banner {
+        margin: 0.75rem;
+        padding: 0.55rem 0.75rem;
+        border-radius: 6px;
+        border: 1px solid rgba(239, 68, 68, 0.45);
+        background: rgba(239, 68, 68, 0.08);
+        color: #ef4444;
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.8rem;
+    }
+
+    .empty-state {
+        margin: auto;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.6rem;
+        color: var(--text-secondary);
+        max-width: 560px;
+        text-align: center;
+        padding: 1rem;
+    }
+
+    .unavailable-reasons {
+        text-align: left;
+        font-size: 0.82rem;
+        margin: 0.2rem 0 0;
+    }
+
+    .metric-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 0.6rem;
+        padding: 0.75rem;
+    }
+
+    .metric-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 0.55rem 0.65rem;
+    }
+
+    .metric-label {
+        font-size: 0.72rem;
+        color: var(--text-tertiary);
+        margin-bottom: 0.2rem;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+    }
+
+    .metric-value {
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .charts-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 0.6rem;
+        padding: 0 0.75rem 0.75rem;
+    }
+
+    .chart-card {
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        padding: 0.5rem 0.6rem 0.4rem;
+    }
+
+    .chart-header {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.78rem;
+        color: var(--text-secondary);
+        margin-bottom: 0.35rem;
+    }
+
+    .chart-svg {
+        width: 100%;
+        height: 96px;
+        background: linear-gradient(to bottom, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.04));
+        border-radius: 6px;
+    }
+
+    .bottom-grid {
+        display: grid;
+        grid-template-columns: minmax(360px, 2fr) minmax(240px, 1fr);
+        gap: 0.6rem;
+        padding: 0 0.75rem 0.75rem;
+        min-height: 220px;
+    }
+
+    .markers-panel, .capabilities-panel {
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        display: flex;
+        flex-direction: column;
+        min-height: 220px;
+    }
+
+    .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.5rem 0.65rem;
+        border-bottom: 1px solid var(--border-color);
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+
+    .marker-filter {
+        font-size: 0.72rem;
+        padding: 0.15rem 0.35rem;
+        border-radius: 4px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-primary);
+        color: var(--text-primary);
+    }
+
+    .marker-list {
+        overflow: auto;
+        padding: 0.25rem 0;
+        flex: 1;
+    }
+
+    .marker-row {
+        display: grid;
+        grid-template-columns: 86px 130px minmax(140px, 1fr);
+        gap: 0.45rem;
+        align-items: center;
+        font-size: 0.74rem;
+        padding: 0.22rem 0.65rem;
+        border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+    }
+
+    .marker-time {
+        color: var(--text-tertiary);
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+    }
+
+    .marker-type {
+        color: #8b5cf6;
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .marker-name {
+        color: var(--text-primary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .marker-payload {
+        grid-column: 2 / -1;
+        color: var(--text-tertiary);
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .cap-grid {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        row-gap: 0.3rem;
+        column-gap: 0.75rem;
+        padding: 0.65rem;
+        font-size: 0.78rem;
+    }
+
+    .cap-row {
+        display: contents;
+    }
+
+    .support-yes {
+        color: #22c55e;
+        font-weight: 600;
+    }
+
+    .support-no {
+        color: #ef4444;
+        font-weight: 600;
+    }
+
+    .session-meta {
+        border-top: 1px solid var(--border-color);
+        padding: 0.65rem;
+        font-size: 0.76rem;
+        color: var(--text-secondary);
+        display: grid;
+        gap: 0.25rem;
+    }
+
+    .empty-inline {
+        padding: 0.75rem;
+        color: var(--text-tertiary);
+        font-size: 0.78rem;
+    }
+
+    @@media (max-width: 1100px) {
+        .bottom-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>

@@ -29,6 +29,9 @@
             <button class="tab-btn @(activeTab == "network" ? "active" : "")" @onclick='@(() => SwitchTab("network"))'>
                 <i class="fas fa-network-wired"></i> Network
             </button>
+            <button class="tab-btn @(activeTab == "profiling" ? "active" : "")" @onclick='@(() => SwitchTab("profiling"))'>
+                <i class="fas fa-chart-line"></i> Profiling
+            </button>
             <button class="tab-btn @(activeTab == "webview" ? "active" : "")" @onclick='@(() => SwitchTab("webview"))'>
                 <i class="fas fa-globe"></i> WebView
             </button>
@@ -59,6 +62,9 @@
                 case "network":
                     <DevFlowNetworkTab Client="@client" />
                     break;
+                case "profiling":
+                    <DevFlowProfilingTab Client="@client" />
+                    break;
                 case "webview":
                     <DevFlowWebViewTab Client="@client" Logs="@webviewLogs" OnClearLogs="ClearWebViewLogs" />
                     break;
@@ -85,6 +91,10 @@
     private string agentHost = "localhost";
     private int agentPort = 9223;
     private string activeTab = "tree";
+    private static readonly HashSet<string> ValidTabs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "tree", "network", "profiling", "webview", "logs"
+    };
     private bool isConnected;
     private bool isReconnecting;
 
@@ -104,7 +114,7 @@
     {
         agentHost = QueryHost ?? "localhost";
         agentPort = QueryPort ?? 9223;
-        activeTab = TabName ?? "tree";
+        activeTab = NormalizeTab(TabName);
 
         ToolbarService.SetItems(
             new ToolbarAction("refresh", "Refresh", "arrow.clockwise")
@@ -286,9 +296,20 @@
 
     private void SwitchTab(string tab)
     {
-        if (activeTab == tab) return;
-        activeTab = tab;
+        var normalized = NormalizeTab(tab);
+        if (activeTab == normalized) return;
+        activeTab = normalized;
         StateHasChanged();
+    }
+
+    private static string NormalizeTab(string? tab)
+    {
+        if (string.IsNullOrWhiteSpace(tab))
+            return "tree";
+
+        return ValidTabs.Contains(tab)
+            ? tab.ToLowerInvariant()
+            : "tree";
     }
 
     public void Dispose()
