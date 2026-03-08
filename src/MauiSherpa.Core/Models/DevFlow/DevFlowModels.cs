@@ -191,14 +191,98 @@ public class DevFlowProfilerBatch
     [JsonPropertyName("markers")]
     public List<DevFlowProfilerMarker> Markers { get; set; } = new();
 
+    [JsonPropertyName("spans")]
+    public List<DevFlowProfilerSpan> Spans { get; set; } = new();
+
     [JsonPropertyName("sampleCursor")]
     public long SampleCursor { get; set; }
 
     [JsonPropertyName("markerCursor")]
     public long MarkerCursor { get; set; }
 
+    [JsonPropertyName("spanCursor")]
+    public long SpanCursor { get; set; }
+
     [JsonPropertyName("isActive")]
     public bool IsActive { get; set; }
+}
+
+/// <summary>
+/// Timed profiler operation span.
+/// </summary>
+public class DevFlowProfilerSpan
+{
+    [JsonPropertyName("spanId")]
+    public string SpanId { get; set; } = string.Empty;
+
+    [JsonPropertyName("parentSpanId")]
+    public string? ParentSpanId { get; set; }
+
+    [JsonPropertyName("traceId")]
+    public string? TraceId { get; set; }
+
+    [JsonPropertyName("startTsUtc")]
+    public DateTimeOffset StartTsUtc { get; set; }
+
+    [JsonPropertyName("endTsUtc")]
+    public DateTimeOffset EndTsUtc { get; set; }
+
+    [JsonPropertyName("durationMs")]
+    public double DurationMs { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("threadId")]
+    public int? ThreadId { get; set; }
+
+    [JsonPropertyName("screen")]
+    public string? Screen { get; set; }
+
+    [JsonPropertyName("elementPath")]
+    public string? ElementPath { get; set; }
+
+    [JsonPropertyName("tagsJson")]
+    public string? TagsJson { get; set; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// Aggregated span hotspot.
+/// </summary>
+public class DevFlowProfilerHotspot
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("screen")]
+    public string? Screen { get; set; }
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+
+    [JsonPropertyName("errorCount")]
+    public int ErrorCount { get; set; }
+
+    [JsonPropertyName("avgDurationMs")]
+    public double AvgDurationMs { get; set; }
+
+    [JsonPropertyName("p95DurationMs")]
+    public double P95DurationMs { get; set; }
+
+    [JsonPropertyName("maxDurationMs")]
+    public double MaxDurationMs { get; set; }
 }
 
 /// <summary>

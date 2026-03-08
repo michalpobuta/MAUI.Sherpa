@@ -198,12 +198,27 @@ public class DevFlowAgentClient : IDisposable
     public async Task<DevFlowProfilerBatch?> GetProfilerSamplesAsync(
         long sampleCursor = 0,
         long markerCursor = 0,
+        long spanCursor = 0,
         int limit = 200,
         CancellationToken ct = default)
     {
         var safeLimit = Math.Clamp(limit, 1, 5000);
-        var url = $"/api/profiler/samples?sampleCursor={sampleCursor}&markerCursor={markerCursor}&limit={safeLimit}";
+        var url = $"/api/profiler/samples?sampleCursor={sampleCursor}&markerCursor={markerCursor}&spanCursor={spanCursor}&limit={safeLimit}";
         return await GetAsync<DevFlowProfilerBatch>(url, ct);
+    }
+
+    public async Task<List<DevFlowProfilerHotspot>> GetProfilerHotspotsAsync(
+        int limit = 20,
+        int minDurationMs = 16,
+        string? kind = "ui.operation",
+        CancellationToken ct = default)
+    {
+        limit = Math.Clamp(limit, 1, 200);
+        minDurationMs = Math.Clamp(minDurationMs, 0, 60_000);
+        var url = $"/api/profiler/hotspots?limit={limit}&minDurationMs={minDurationMs}";
+        if (!string.IsNullOrWhiteSpace(kind))
+            url += $"&kind={Uri.EscapeDataString(kind)}";
+        return await GetAsync<List<DevFlowProfilerHotspot>>(url, ct) ?? new();
     }
 
     public async Task<bool> PublishProfilerMarkerAsync(

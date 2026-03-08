@@ -165,35 +165,80 @@
 
         <div class="bottom-grid">
             <div class="markers-panel">
-                <div class="panel-header">
-                    <span>Markers (@markers.Count)</span>
-                    <select class="marker-filter" @bind="markerTypeFilter">
-                        <option value="">All types</option>
-                        @foreach (var markerType in MarkerTypes)
-                        {
-                            <option value="@markerType">@markerType</option>
-                        }
-                    </select>
+                <div class="panel-header timeline-header">
+                    <span>UI Timeline (@TimelineEvents.Count() / @TimelineTotalCount)</span>
+                    <div class="timeline-controls">
+                        <input class="timeline-search"
+                               placeholder="Search route/view/error..."
+                               @bind="timelineSearchText" />
+                        <select class="marker-filter" @bind="timelineSeverityFilter">
+                            <option value="all">All</option>
+                            <option value="problems">Problems only</option>
+                            <option value="errors">Errors only</option>
+                            <option value="slow">Slow only (&gt;= @SlowTimelineDurationMs ms)</option>
+                        </select>
+                        <select class="marker-filter" @bind="timelineTypeFilter">
+                            <option value="">All event kinds</option>
+                            @foreach (var timelineType in TimelineTypes)
+                            {
+                                <option value="@timelineType">@timelineType</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+                <div class="timeline-summary">
+                    <span class="summary-pill problems">Problems @TimelineProblemCount</span>
+                    <span class="summary-pill errors">Errors @TimelineErrorCount</span>
+                    <span class="summary-pill slow">Slow @TimelineSlowCount</span>
+                    <span class="summary-pill">Navigation @TimelineNavigationCount</span>
+                    <span class="summary-pill">Render @TimelineRenderCount</span>
+                    <span class="summary-pill">Scroll @TimelineScrollCount</span>
+                </div>
+                <div class="timeline-columns">
+                    <span>Time</span>
+                    <span>Kind</span>
+                    <span>Operation</span>
+                    <span>Duration</span>
+                    <span>Status</span>
                 </div>
                 <div class="marker-list">
-                    @if (FilteredMarkers.Any())
+                    @if (TimelineEvents.Any())
                     {
-                        @foreach (var marker in FilteredMarkers)
+                        @foreach (var entry in TimelineEvents)
                         {
-                            <div class="marker-row">
-                                <span class="marker-time">@marker.TsUtc.ToLocalTime().ToString("HH:mm:ss.fff")</span>
-                                <span class="marker-type">@marker.Type</span>
-                                <span class="marker-name">@marker.Name</span>
-                                @if (!string.IsNullOrWhiteSpace(marker.PayloadJson))
+                            <div class="marker-row @GetTimelineRowCss(entry)">
+                                <span class="marker-time">@entry.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</span>
+                                <span class="marker-type @GetTimelineKindCss(entry)">@entry.Kind</span>
+                                <span class="marker-name">@entry.Name</span>
+                                @if (entry.DurationMs.HasValue)
                                 {
-                                    <span class="marker-payload" title="@marker.PayloadJson">@TrimText(marker.PayloadJson, 72)</span>
+                                    <span class="span-duration">@FormatMetric(entry.DurationMs, "ms")</span>
+                                }
+                                else
+                                {
+                                    <span class="span-duration">—</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(entry.Status))
+                                {
+                                    <span class="span-status @(entry.Status.Equals("ok", StringComparison.OrdinalIgnoreCase) ? "status-ok" : "status-error")">@entry.Status</span>
+                                }
+                                else
+                                {
+                                    <span class="span-status">—</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(entry.Detail))
+                                {
+                                    <details class="timeline-detail">
+                                        <summary>@TrimText(entry.Detail, 120)</summary>
+                                        <pre>@entry.Detail</pre>
+                                    </details>
                                 }
                             </div>
                         }
                     }
                     else
                     {
-                        <div class="empty-inline">No markers yet.</div>
+                        <div class="empty-inline">No timeline events yet.</div>
                     }
                 </div>
             </div>
@@ -218,9 +263,46 @@
                         <div><strong>Interval:</strong> @session.SampleIntervalMs ms</div>
                     }
                     <div><strong>Samples in view:</strong> @samples.Count</div>
-                    <div><strong>Markers in view:</strong> @markers.Count</div>
+                    <div><strong>Timeline events in view:</strong> @(markers.Count + spans.Count)</div>
                     <div><strong>Frame quality:</strong> @(LatestSample?.FrameQuality ?? "—")</div>
                 </div>
+            </div>
+        </div>
+
+        <div class="hotspots-panel">
+            <div class="panel-header">
+                <span>Hotspots</span>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <select class="marker-filter" @bind="spanKindFilter" @bind:after="OnSpanKindFilterChanged">
+                        <option value="">All kinds</option>
+                        @foreach (var spanKind in SpanKinds)
+                        {
+                            <option value="@spanKind">@spanKind</option>
+                        }
+                    </select>
+                    <span class="platform-pill">P95 desc</span>
+                </div>
+            </div>
+            <div class="hotspot-list">
+                @if (hotspots.Count > 0)
+                {
+                    @foreach (var hotspot in hotspots.Take(24))
+                    {
+                        <div class="hotspot-row">
+                            <div class="hotspot-name">@hotspot.Name</div>
+                            <div class="hotspot-meta">@($"{hotspot.Kind} · {hotspot.Count}x · err {hotspot.ErrorCount}")</div>
+                            <div class="hotspot-metrics">
+                                <span>P95 @FormatMetric(hotspot.P95DurationMs, "ms")</span>
+                                <span>AVG @FormatMetric(hotspot.AvgDurationMs, "ms")</span>
+                                <span>MAX @FormatMetric(hotspot.MaxDurationMs, "ms")</span>
+                            </div>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="empty-inline">No hotspot data yet.</div>
+                }
             </div>
         </div>
     }
@@ -231,20 +313,28 @@
 
     private const int MaxSampleHistory = 600;
     private const int MaxMarkerHistory = 300;
+    private const int MaxSpanHistory = 600;
     private readonly List<DevFlowProfilerSample> samples = new();
     private readonly List<DevFlowProfilerMarker> markers = new();
+    private readonly List<DevFlowProfilerSpan> spans = new();
+    private List<DevFlowProfilerHotspot> hotspots = new();
 
     private DevFlowProfilerCapabilities? capabilities;
     private DevFlowProfilerSessionInfo? session;
     private Timer? pollTimer;
     private long sampleCursor;
     private long markerCursor;
+    private long spanCursor;
     private int sampleIntervalMs = 500;
     private bool livePolling = true;
     private bool isBusy;
     private int pollInFlight;
-    private string markerTypeFilter = string.Empty;
+    private string timelineTypeFilter = string.Empty;
+    private string timelineSeverityFilter = "all";
+    private string timelineSearchText = string.Empty;
+    private string spanKindFilter = string.Empty;
     private string? errorMessage;
+    private const double SlowTimelineDurationMs = 80d;
 
     private bool CanStart => !isBusy && capabilities?.Available == true && session?.IsActive != true;
     private bool CanStop => !isBusy && session?.IsActive == true;
@@ -255,16 +345,59 @@
     private string memoryPoints => GetSparklinePoints(s => s.ManagedBytes);
     private string cpuPoints => GetSparklinePoints(s => s.CpuPercent);
 
-    private IEnumerable<string> MarkerTypes =>
-        markers.Select(m => m.Type)
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase);
+    private sealed record UiTimelineEntry(
+        DateTimeOffset Timestamp,
+        string Kind,
+        string Name,
+        double? DurationMs,
+        string? Status,
+        string? Detail);
 
-    private IEnumerable<DevFlowProfilerMarker> FilteredMarkers =>
-        markers.Where(m => string.IsNullOrWhiteSpace(markerTypeFilter) || m.Type.Equals(markerTypeFilter, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(m => m.TsUtc)
-            .Take(160);
+    private IEnumerable<string> TimelineTypes =>
+        markers.Select(m => m.Type)
+            .Concat(spans.Select(s => s.Kind))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase);
+
+    private IEnumerable<UiTimelineEntry> RawTimelineEvents =>
+        markers.Select(marker => new UiTimelineEntry(
+                marker.TsUtc,
+                marker.Type,
+                marker.Name,
+                null,
+                null,
+                marker.PayloadJson))
+            .Concat(spans.Select(span => new UiTimelineEntry(
+                span.EndTsUtc,
+                span.Kind,
+                span.Name,
+                span.DurationMs,
+                span.Status,
+                BuildSpanDetail(span))));
+
+    private IEnumerable<UiTimelineEntry> TimelineEvents =>
+        RawTimelineEvents
+            .Where(entry => MatchesTimelineType(entry))
+            .Where(entry => MatchesTimelineSeverity(entry))
+            .Where(entry => MatchesTimelineSearch(entry))
+            .OrderByDescending(entry => entry.Timestamp)
+            .Take(220)
+            .ToList();
+
+    private int TimelineTotalCount => RawTimelineEvents.Count();
+    private int TimelineErrorCount => RawTimelineEvents.Count(IsTimelineError);
+    private int TimelineSlowCount => RawTimelineEvents.Count(IsTimelineSlow);
+    private int TimelineProblemCount => RawTimelineEvents.Count(entry => IsTimelineError(entry) || IsTimelineSlow(entry));
+    private int TimelineNavigationCount => RawTimelineEvents.Count(entry => IsNavigationEntry(entry.Kind));
+    private int TimelineRenderCount => RawTimelineEvents.Count(entry => IsRenderEntry(entry.Kind, entry.Name));
+    private int TimelineScrollCount => RawTimelineEvents.Count(entry => IsScrollEntry(entry.Kind, entry.Name));
+
+    private IEnumerable<string> SpanKinds =>
+        spans.Select(span => span.Kind)
+            .Where(kind => !string.IsNullOrWhiteSpace(kind))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(kind => kind, StringComparer.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
     {
@@ -319,8 +452,11 @@
 
             sampleCursor = 0;
             markerCursor = 0;
+            spanCursor = 0;
             samples.Clear();
             markers.Clear();
+            spans.Clear();
+            hotspots.Clear();
 
             await PollSamplesAsync();
             if (livePolling && session.IsActive)
@@ -374,6 +510,12 @@
         return Task.CompletedTask;
     }
 
+    private async Task OnSpanKindFilterChanged()
+    {
+        await RefreshHotspotsAsync();
+        StateHasChanged();
+    }
+
     private void StartPolling()
     {
         StopPolling();
@@ -394,12 +536,13 @@
 
         try
         {
-            var batch = await Client.GetProfilerSamplesAsync(sampleCursor, markerCursor, 240);
+            var batch = await Client.GetProfilerSamplesAsync(sampleCursor, markerCursor, spanCursor, 240);
             if (batch == null)
                 return;
 
             sampleCursor = batch.SampleCursor;
             markerCursor = batch.MarkerCursor;
+            spanCursor = batch.SpanCursor;
 
             if (!string.IsNullOrWhiteSpace(batch.SessionId))
             {
@@ -431,6 +574,15 @@
                     markers.RemoveRange(0, markers.Count - MaxMarkerHistory);
             }
 
+            if (batch.Spans.Count > 0)
+            {
+                spans.AddRange(batch.Spans);
+                if (spans.Count > MaxSpanHistory)
+                    spans.RemoveRange(0, spans.Count - MaxSpanHistory);
+            }
+
+            await RefreshHotspotsAsync();
+
             if (!batch.IsActive)
                 StopPolling();
 
@@ -453,10 +605,104 @@
     {
         samples.Clear();
         markers.Clear();
+        spans.Clear();
+        hotspots.Clear();
         sampleCursor = 0;
         markerCursor = 0;
-        markerTypeFilter = string.Empty;
+        spanCursor = 0;
+        timelineTypeFilter = string.Empty;
+        timelineSeverityFilter = "all";
+        timelineSearchText = string.Empty;
         StateHasChanged();
+    }
+
+    private async Task RefreshHotspotsAsync()
+    {
+        try
+        {
+            hotspots = await Client.GetProfilerHotspotsAsync(24, 16, spanKindFilter);
+        }
+        catch
+        {
+            hotspots = new List<DevFlowProfilerHotspot>();
+        }
+    }
+
+    private bool MatchesTimelineType(UiTimelineEntry entry)
+        => string.IsNullOrWhiteSpace(timelineTypeFilter)
+            || entry.Kind.Equals(timelineTypeFilter, StringComparison.OrdinalIgnoreCase);
+
+    private bool MatchesTimelineSeverity(UiTimelineEntry entry)
+        => timelineSeverityFilter switch
+        {
+            "errors" => IsTimelineError(entry),
+            "slow" => IsTimelineSlow(entry),
+            "problems" => IsTimelineError(entry) || IsTimelineSlow(entry),
+            _ => true
+        };
+
+    private bool MatchesTimelineSearch(UiTimelineEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(timelineSearchText))
+            return true;
+
+        return ContainsIgnoreCase(entry.Name, timelineSearchText)
+            || ContainsIgnoreCase(entry.Kind, timelineSearchText)
+            || ContainsIgnoreCase(entry.Detail, timelineSearchText);
+    }
+
+    private static bool IsTimelineError(UiTimelineEntry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.Status)
+            && !entry.Status.Equals("ok", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (ContainsIgnoreCase(entry.Kind, "error")
+            || ContainsIgnoreCase(entry.Name, "error")
+            || ContainsIgnoreCase(entry.Detail, "\"error\"")
+            || ContainsIgnoreCase(entry.Detail, "exception"))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsTimelineSlow(UiTimelineEntry entry)
+        => entry.DurationMs.HasValue && entry.DurationMs.Value >= SlowTimelineDurationMs;
+
+    private static bool IsNavigationEntry(string kind)
+        => ContainsIgnoreCase(kind, "navigation");
+
+    private static bool IsRenderEntry(string kind, string name)
+        => ContainsIgnoreCase(kind, "render")
+            || ContainsIgnoreCase(name, "layout")
+            || ContainsIgnoreCase(kind, "page");
+
+    private static bool IsScrollEntry(string kind, string name)
+        => ContainsIgnoreCase(kind, "scroll")
+            || ContainsIgnoreCase(name, "scroll");
+
+    private static bool ContainsIgnoreCase(string? value, string? needle)
+        => !string.IsNullOrWhiteSpace(value)
+            && !string.IsNullOrWhiteSpace(needle)
+            && value.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+    private string GetTimelineRowCss(UiTimelineEntry entry)
+    {
+        if (IsTimelineError(entry))
+            return "timeline-row-error";
+        if (IsTimelineSlow(entry))
+            return "timeline-row-slow";
+        return string.Empty;
+    }
+
+    private static string GetTimelineKindCss(UiTimelineEntry entry)
+    {
+        if (IsNavigationEntry(entry.Kind)) return "kind-navigation";
+        if (IsRenderEntry(entry.Kind, entry.Name)) return "kind-render";
+        if (IsScrollEntry(entry.Kind, entry.Name)) return "kind-scroll";
+        if (ContainsIgnoreCase(entry.Kind, "input") || ContainsIgnoreCase(entry.Name, "input")) return "kind-input";
+        if (ContainsIgnoreCase(entry.Kind, "network")) return "kind-network";
+        return "kind-generic";
     }
 
     private (int Gc0, int Gc1, int Gc2) GetGcDelta()
@@ -521,6 +767,21 @@
         if (value < 1024L * 1024L * 1024L)
             return $"{value / (1024d * 1024d):F1} MB";
         return $"{value / (1024d * 1024d * 1024d):F2} GB";
+    }
+
+    private static string? BuildSpanDetail(DevFlowProfilerSpan span)
+    {
+        var details = new List<string>();
+        if (!string.IsNullOrWhiteSpace(span.Screen))
+            details.Add($"screen={span.Screen}");
+        if (!string.IsNullOrWhiteSpace(span.ElementPath))
+            details.Add($"element={span.ElementPath}");
+        if (!string.IsNullOrWhiteSpace(span.Error))
+            details.Add($"error={span.Error}");
+        if (!string.IsNullOrWhiteSpace(span.TagsJson))
+            details.Add(span.TagsJson);
+
+        return details.Count == 0 ? null : string.Join(" | ", details);
     }
 
     private static string SupportCss(bool supported) => supported ? "support-yes" : "support-no";
@@ -746,6 +1007,23 @@
         min-height: 220px;
     }
 
+    .spans-grid {
+        display: grid;
+        grid-template-columns: minmax(360px, 2fr) minmax(280px, 1fr);
+        gap: 0.6rem;
+        padding: 0 0.75rem 0.75rem;
+        min-height: 220px;
+    }
+
+    .spans-panel, .hotspots-panel {
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        display: flex;
+        flex-direction: column;
+        min-height: 220px;
+    }
+
     .panel-header {
         display: flex;
         align-items: center;
@@ -754,6 +1032,18 @@
         border-bottom: 1px solid var(--border-color);
         font-size: 0.8rem;
         font-weight: 600;
+    }
+
+    .timeline-header {
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+
+    .timeline-controls {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        flex-wrap: wrap;
     }
 
     .marker-filter {
@@ -765,7 +1055,70 @@
         color: var(--text-primary);
     }
 
+    .timeline-search {
+        font-size: 0.72rem;
+        padding: 0.17rem 0.4rem;
+        border-radius: 4px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        min-width: 180px;
+    }
+
+    .timeline-summary {
+        display: flex;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+        padding: 0.4rem 0.65rem;
+        border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+    }
+
+    .summary-pill {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+        border-radius: 999px;
+        padding: 0.1rem 0.45rem;
+        font-size: 0.68rem;
+        color: var(--text-secondary);
+        background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
+    }
+
+    .summary-pill.problems {
+        border-color: #f59e0b55;
+        color: #f59e0b;
+    }
+
+    .summary-pill.errors {
+        border-color: #ef444466;
+        color: #ef4444;
+    }
+
+    .summary-pill.slow {
+        border-color: #f9731655;
+        color: #f97316;
+    }
+
+    .timeline-columns {
+        display: grid;
+        grid-template-columns: 88px 130px minmax(160px, 1fr) 88px 58px;
+        gap: 0.45rem;
+        padding: 0.25rem 0.65rem 0.3rem;
+        border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+        font-size: 0.66rem;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+        font-weight: 600;
+    }
+
     .marker-list {
+        overflow: auto;
+        padding: 0.25rem 0;
+        flex: 1;
+    }
+
+    .span-list, .hotspot-list {
         overflow: auto;
         padding: 0.25rem 0;
         flex: 1;
@@ -773,7 +1126,17 @@
 
     .marker-row {
         display: grid;
-        grid-template-columns: 86px 130px minmax(140px, 1fr);
+        grid-template-columns: 88px 130px minmax(160px, 1fr) 88px 58px;
+        gap: 0.45rem;
+        align-items: center;
+        font-size: 0.74rem;
+        padding: 0.22rem 0.65rem;
+        border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+    }
+
+    .span-row {
+        display: grid;
+        grid-template-columns: 86px 120px minmax(120px, 1fr) 88px 56px;
         gap: 0.45rem;
         align-items: center;
         font-size: 0.74rem;
@@ -794,6 +1157,13 @@
         white-space: nowrap;
     }
 
+    .kind-navigation { color: #60a5fa; }
+    .kind-render { color: #22c55e; }
+    .kind-scroll { color: #f59e0b; }
+    .kind-input { color: #a78bfa; }
+    .kind-network { color: #f97316; }
+    .kind-generic { color: #8b5cf6; }
+
     .marker-name {
         color: var(--text-primary);
         overflow: hidden;
@@ -801,13 +1171,101 @@
         white-space: nowrap;
     }
 
+    .span-duration {
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+        color: var(--text-secondary);
+        text-align: right;
+    }
+
+    .span-status {
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        text-align: right;
+        color: var(--text-tertiary);
+    }
+
+    .status-ok { color: #22c55e; }
+    .status-error { color: #ef4444; }
+
+    .timeline-row-error {
+        background: color-mix(in srgb, #ef4444 8%, transparent);
+        border-left: 2px solid #ef4444;
+    }
+
+    .timeline-row-slow {
+        background: color-mix(in srgb, #f59e0b 8%, transparent);
+        border-left: 2px solid #f59e0b;
+    }
+
+    .hotspot-row {
+        display: grid;
+        gap: 0.18rem;
+        padding: 0.4rem 0.65rem;
+        border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+    }
+
+    .hotspot-name {
+        color: var(--text-primary);
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+
+    .hotspot-meta {
+        color: var(--text-tertiary);
+        font-size: 0.72rem;
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+    }
+
+    .hotspot-metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        color: var(--text-secondary);
+        font-size: 0.73rem;
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+    }
+
     .marker-payload {
-        grid-column: 2 / -1;
+        grid-column: 1 / -1;
         color: var(--text-tertiary);
         font-family: 'SF Mono', 'Cascadia Code', monospace;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+
+    .timeline-detail {
+        grid-column: 1 / -1;
+        color: var(--text-tertiary);
+        font-size: 0.68rem;
+        margin-top: -0.08rem;
+    }
+
+    .timeline-detail summary {
+        cursor: pointer;
+        list-style: none;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .timeline-detail summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .timeline-detail pre {
+        margin: 0.25rem 0 0;
+        padding: 0.3rem 0.35rem;
+        background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+        border-radius: 4px;
+        border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+        color: var(--text-secondary);
+        font-family: 'SF Mono', 'Cascadia Code', monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 180px;
+        overflow: auto;
     }
 
     .cap-grid {
@@ -849,7 +1307,7 @@
     }
 
     @@media (max-width: 1100px) {
-        .bottom-grid {
+        .bottom-grid, .spans-grid {
             grid-template-columns: 1fr;
         }
     }
