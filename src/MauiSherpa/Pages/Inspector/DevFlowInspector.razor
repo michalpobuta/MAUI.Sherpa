@@ -105,6 +105,11 @@
     private CancellationTokenSource? _logStreamCts;
     private Timer? _pollTimer;
 
+    // Batching: buffer incoming log entries and render at most every 100ms
+    private readonly List<DevFlowLogEntry> _pendingLogEntries = new();
+    private Timer? _logBatchTimer;
+    private const int LogBatchIntervalMs = 100;
+
     private List<DevFlowLogEntry> webviewLogs =>
         allLogs.Where(l => l.Source?.Equals("webview", StringComparison.OrdinalIgnoreCase) == true
             && (_webviewLogsClearedAfter == DateTimeOffset.MinValue || l.Timestamp > _webviewLogsClearedAfter))
@@ -138,7 +143,8 @@
     {
         try
         {
-            agentStatus = await client!.GetStatusAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            agentStatus = await client!.GetStatusAsync(cts.Token);
             isConnected = agentStatus != null;
         }
         catch
@@ -207,8 +213,11 @@
                             {
                                 if (_allLogsClearedAfter != DateTimeOffset.MinValue && entry.Timestamp <= _allLogsClearedAfter)
                                     return;
-                                allLogs.Add(entry);
-                                StateHasChanged();
+                                _pendingLogEntries.Add(entry);
+                                _logBatchTimer ??= new Timer(_ =>
+                                {
+                                    InvokeAsync(FlushPendingLogs);
+                                }, null, LogBatchIntervalMs, Timeout.Infinite);
                             });
                         },
                         source: null,
@@ -281,6 +290,7 @@
         else
             _allLogsClearedAfter = DateTimeOffset.UtcNow;
         allLogs.Clear();
+        _pendingLogEntries.Clear();
         StateHasChanged();
     }
 
@@ -312,11 +322,23 @@
             : "tree";
     }
 
+    private void FlushPendingLogs()
+    {
+        _logBatchTimer?.Dispose();
+        _logBatchTimer = null;
+        if (_pendingLogEntries.Count == 0)
+            return;
+        allLogs.AddRange(_pendingLogEntries);
+        _pendingLogEntries.Clear();
+        StateHasChanged();
+    }
+
     public void Dispose()
     {
         ToolbarService.ToolbarItemClicked -= OnToolbarItemClicked;
         ToolbarService.ClearItems();
         _logStreamCts?.Cancel();
+        _logBatchTimer?.Dispose();
         _pollTimer?.Dispose();
         client?.Dispose();
     }
