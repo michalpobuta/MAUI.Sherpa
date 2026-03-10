@@ -170,14 +170,22 @@ public class KeystoreSyncService : IKeystoreSyncService
         _logger.LogInformation($"Keystore downloaded from cloud: {alias} → {filePath}");
     }
 
-    public async Task DeleteKeystoreFromCloudAsync(string cloudKey, CancellationToken ct = default)
+    public async Task DeleteKeystoreFromCloudAsync(string alias, CancellationToken ct = default)
     {
-        var alias = ExtractAliasFromKey(cloudKey);
         _logger.LogInformation($"Deleting keystore from cloud: {alias}");
 
-        await _cloudService.DeleteSecretAsync(GetCloudKey(alias, "JKS"), ct);
-        await _cloudService.DeleteSecretAsync(GetCloudKey(alias, "PWD"), ct);
-        await _cloudService.DeleteSecretAsync(GetCloudKey(alias, "META"), ct);
+        var failures = new List<string>();
+
+        if (!await _cloudService.DeleteSecretAsync(GetCloudKey(alias, "JKS"), ct))
+            failures.Add("keystore file (JKS)");
+        if (!await _cloudService.DeleteSecretAsync(GetCloudKey(alias, "PWD"), ct))
+            failures.Add("password (PWD)");
+        if (!await _cloudService.DeleteSecretAsync(GetCloudKey(alias, "META"), ct))
+            failures.Add("metadata (META)");
+
+        if (failures.Count > 0)
+            throw new InvalidOperationException(
+                $"Failed to delete keystore '{alias}' from cloud. Could not remove: {string.Join(", ", failures)}");
     }
 
     private static string GetCloudKey(string alias, string suffix) => $"{CloudKeyPrefix}{alias}_{suffix}";
